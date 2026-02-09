@@ -1,4 +1,4 @@
-name: nixathon-2026
+version: '2.2'
 
 services:
   app:
@@ -9,3 +9,14 @@ services:
     ports:
       - "${APP_PORT:-8080}:8080"
     restart: unless-stopped
+
+  nginx:
+    restart: always
+    build: ./nginx-ssl
+    volumes:
+      - /etc/letsencrypt/live/vps-91989053.vps.ovh.net/fullchain.pem:/etc/ssl/chain/fullchain.pem
+      - /etc/letsencrypt/live/vps-91989053.vps.ovh.net/privkey.pem:/etc/ssl/private/privkey.pem
+    ports:
+        - "443:443"
+    depends_on:
+        - app
