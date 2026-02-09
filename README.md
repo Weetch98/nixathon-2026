@@ -19,6 +19,62 @@ The app starts on `http://localhost:8080` by default.
 ./mvnw clean package
 ```
 
+## Deploy to VPS (Remote Docker Context over SSH)
+
+This is the direct workflow: your local machine triggers deploys on the VPS Docker daemon over SSH.
+
+### Prerequisites
+
+- Local machine:
+  - Docker with Compose support
+  - SSH key access to your VPS user
+- VPS:
+  - Docker Engine + Docker Compose plugin installed
+  - Port `8080` open (or a reverse proxy configured)
+
+### One-time setup
+
+Create a Docker context that points to the VPS daemon through SSH:
+
+```bash
+docker context create nixathon-vps --docker "host=ssh://<user>@<vps-public-ip>"
+docker --context nixathon-vps info
+```
+
+### Deploy
+
+From the project root:
+
+```bash
+docker --context nixathon-vps compose up -d --build
+docker --context nixathon-vps compose ps
+```
+
+Quick health check:
+
+```bash
+curl http://<vps-public-ip>:8080/healthz
+```
+
+### Convenience script
+
+You can also deploy with:
+
+```bash
+./scripts/deploy-vps.sh
+```
+
+
+### Development workflow
+
+1. Make code changes locally.
+2. Run deploy command:
+   - `docker --context nixathon-vps compose up -d --build`
+   - or `./scripts/deploy-vps.sh`
+3. Verify:
+   - `docker --context nixathon-vps compose ps`
+   - `curl http://<vps-public-ip>:8080/healthz`
+
 ## API
 
 ### Health check

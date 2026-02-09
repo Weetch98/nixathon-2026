@@ -1,0 +1,11 @@
+name: nixathon-2026
+
+services:
+  app:
+    container_name: nixathon-2026-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    restart: unless-stopped
