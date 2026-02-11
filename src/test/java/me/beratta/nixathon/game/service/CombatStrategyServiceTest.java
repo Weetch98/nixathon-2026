@@ -24,13 +24,10 @@ class CombatStrategyServiceTest {
 
     @Test
     void shouldGenerateOnlyValidAffordableActions() {
-        ThreatAssessmentService threatAssessmentService = new ThreatAssessmentService();
         EconomyService economyService = new EconomyService();
         GameMemoryService gameMemoryService = new GameMemoryService();
         CombatStrategyService combatStrategyService = new CombatStrategyService(
-                threatAssessmentService,
-                economyService,
-                gameMemoryService
+                economyService
         );
 
         gameMemoryService.storeNegotiationPlan(42L, 7, List.of(

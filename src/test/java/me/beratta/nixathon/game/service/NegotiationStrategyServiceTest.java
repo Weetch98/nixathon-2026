@@ -22,11 +22,8 @@ class NegotiationStrategyServiceTest {
 
     @Test
     void shouldReturnUniqueAlliesAndPersistCommitment() {
-        ThreatAssessmentService threatAssessmentService = new ThreatAssessmentService();
         GameMemoryService gameMemoryService = new GameMemoryService();
         NegotiationStrategyService negotiationStrategyService = new NegotiationStrategyService(
-                threatAssessmentService,
-                gameMemoryService
         );
 
         NegotiationRequest request = new NegotiationRequest(
