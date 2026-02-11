@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Java 21
+- Java 25
 - Maven 3.9+ (or use the included `./mvnw`)
 
 ## Run locally

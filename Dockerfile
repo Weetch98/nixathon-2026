@@ -1,4 +1,4 @@
-FROM maven:3.9.11-eclipse-temurin-21 AS build
+FROM maven:3.9.11-eclipse-temurin-25 AS build
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ RUN JAR_FILE="$(ls target/*.jar | grep -v '\\.original$' | head -n 1)" \
     && test -n "$JAR_FILE" \
     && cp "$JAR_FILE" /app/app.jar
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:25-jre
 
 WORKDIR /app
 
