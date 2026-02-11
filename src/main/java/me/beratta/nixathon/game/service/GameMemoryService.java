@@ -19,6 +19,15 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Per-game memory store used by strategy services.
+ * <p>
+ * Keeps two categories of data:
+ * <ul>
+ *     <li>Short-lived negotiation commitment for the active turn.</li>
+ *     <li>Long-lived behavioral profiles for each enemy player.</li>
+ * </ul>
+ */
 @Service
 public class GameMemoryService {
 
@@ -27,6 +36,9 @@ public class GameMemoryService {
     private final Map<Long, NegotiationCommitment> commitmentsByGameId = new ConcurrentHashMap<>();
     private final Map<Long, GameState> gameStateByGameId = new ConcurrentHashMap<>();
 
+    /**
+     * Persists the outgoing negotiation plan so combat phase can reuse intent.
+     */
     public void storeNegotiationPlan(long gameId, int turn, List<NegotiationMessage> messages) {
         Set<Integer> messageRecipients = messages.stream()
                 .map(NegotiationMessage::allyId)
@@ -48,6 +60,7 @@ public class GameMemoryService {
                 .map(Map.Entry::getKey)
                 .orElse(null);
 
+        // Commitment is scoped to the same game+turn and replaced when recomputed.
         commitmentsByGameId.put(gameId, new NegotiationCommitment(turn, messageRecipients, explicitAllies, focusTarget));
         log.debug(
                 "Stored negotiation commitment game={} turn={} recipients={} explicitAllies={} focusTarget={}",
@@ -59,6 +72,9 @@ public class GameMemoryService {
         );
     }
 
+    /**
+     * Returns negotiation commitment if it exists for the same game turn.
+     */
     public Optional<NegotiationCommitment> findCommitment(long gameId, int turn) {
         NegotiationCommitment commitment = commitmentsByGameId.get(gameId);
         if (commitment == null || commitment.turn() != turn) {
@@ -76,6 +92,9 @@ public class GameMemoryService {
         return Optional.of(commitment);
     }
 
+    /**
+     * Updates lightweight visibility info from negotiation payload.
+     */
     public void observeNegotiationTurn(long gameId, int turn, List<EnemyTowerState> enemyTowers) {
         GameState gameState = stateForGame(gameId);
 
@@ -91,12 +110,16 @@ public class GameMemoryService {
             updateDuelState(gameState, turn, aliveEnemies.size());
 
             for (EnemyTowerState enemy : aliveEnemies) {
+                // Negotiation payload still gives us level/durability snapshots.
                 gameState.profileFor(enemy.playerId())
                         .observeVisibility(turn, enemy.level(), enemy.effectiveDurability());
             }
         }
     }
 
+    /**
+     * Updates enemy behavior profiles from combat payload.
+     */
     public void observeCombatTurn(CombatRequest request) {
         long gameId = request.gameId();
         int turn = request.turn();
@@ -155,9 +178,11 @@ public class GameMemoryService {
                     }
                 }
 
+                // Track AFK-like inactivity streaks to detect passive hoarders.
                 profile.recordActivityPattern(attackedAnyoneThisTurn);
                 boolean recentlyOfferedPeace = profile.lastPeaceOfferTurn != null
                         && (turn - profile.lastPeaceOfferTurn) <= 2;
+                // Betrayal means attacking us shortly after (or during) peace signaling.
                 if (attackedUsThisTurn && (offeredPeaceThisTurn || recentlyOfferedPeace)) {
                     profile.recordBetrayal(turn);
                 }
@@ -165,6 +190,9 @@ public class GameMemoryService {
         }
     }
 
+    /**
+     * Exposes immutable profile snapshots for currently relevant enemies.
+     */
     public Map<Integer, PlayerProfileSnapshot> getPlayerProfiles(long gameId, List<EnemyTowerState> enemyTowers) {
         GameState gameState = gameStateByGameId.get(gameId);
         if (gameState == null) {
@@ -184,6 +212,9 @@ public class GameMemoryService {
         }
     }
 
+    /**
+     * Returns remembered duel start turn if known.
+     */
     public Optional<Integer> findDuelStartTurn(long gameId) {
         GameState gameState = gameStateByGameId.get(gameId);
         if (gameState == null) {
@@ -194,10 +225,16 @@ public class GameMemoryService {
         }
     }
 
+    /**
+     * Gets or creates per-game mutable state container.
+     */
     private GameState stateForGame(long gameId) {
         return gameStateByGameId.computeIfAbsent(gameId, ignored -> new GameState());
     }
 
+    /**
+     * Builds unknown profile placeholders when a game has no stored history yet.
+     */
     private Map<Integer, PlayerProfileSnapshot> snapshotFromUnknownProfiles(List<EnemyTowerState> enemyTowers) {
         Map<Integer, PlayerProfileSnapshot> snapshotsByPlayer = new HashMap<>();
         for (EnemyTowerState enemy : enemyTowers) {
@@ -209,6 +246,9 @@ public class GameMemoryService {
         return Map.copyOf(snapshotsByPlayer);
     }
 
+    /**
+     * Tracks when duel starts so fatigue calculations can apply duel fatigue rule.
+     */
     private void updateDuelState(GameState gameState, int turn, int aliveEnemyCount) {
         if (aliveEnemyCount == 1) {
             if (gameState.lastAliveEnemyCount > 1 || gameState.duelStartTurn == null) {
@@ -220,6 +260,9 @@ public class GameMemoryService {
         gameState.lastAliveEnemyCount = aliveEnemyCount;
     }
 
+    /**
+     * Turn-scoped intent captured from our own negotiation response.
+     */
     public record NegotiationCommitment(
             int turn,
             Set<Integer> messagedPlayerIds,
@@ -228,6 +271,9 @@ public class GameMemoryService {
     ) {
     }
 
+    /**
+     * Immutable view of an enemy's observed behavior profile.
+     */
     public record PlayerProfileSnapshot(
             int playerId,
             int turnsObserved,
@@ -248,6 +294,9 @@ public class GameMemoryService {
             int lastSeenTurn,
             Integer lastAttackTurn
     ) {
+        /**
+         * Creates a minimal snapshot when we have no historical data yet.
+         */
         public static PlayerProfileSnapshot unknown(int playerId, int level, int durability) {
             return new PlayerProfileSnapshot(
                     playerId,
@@ -271,6 +320,9 @@ public class GameMemoryService {
             );
         }
 
+        /**
+         * Composite hostility signal used by threat/target ranking.
+         */
         public int hostilityScore() {
             return (attacksAgainstUsTroops / 2)
                     + (attacksAgainstUsCount * 6)
@@ -278,6 +330,9 @@ public class GameMemoryService {
                     + (betrayalsAgainstUs * 18);
         }
 
+        /**
+         * Composite trust signal. Positive values imply better reliability.
+         */
         public int trustScore() {
             return (peaceOffersToUs * 6)
                     + (coordinationOffersToUs * 2)
@@ -286,11 +341,17 @@ public class GameMemoryService {
                     - (attacksAgainstUsCount * 6);
         }
 
+        /**
+         * Heuristic for players that stay passive while likely accumulating resources.
+         */
         public boolean likelyAfkCollector() {
             boolean rarelyAttacks = totalAttacks <= Math.max(1, turnsObserved / 3);
             return consecutiveNoAttackTurns >= 3 && rarelyAttacks && knownLevel >= 2;
         }
 
+        /**
+         * Risk value for passive hoarders that can explode later.
+         */
         public int afkHoardingRisk() {
             if (!likelyAfkCollector()) {
                 return 0;
@@ -299,6 +360,9 @@ public class GameMemoryService {
         }
     }
 
+    /**
+     * Mutable state bucket for one game instance.
+     */
     private static final class GameState {
 
         private Integer lastObservedNegotiationTurn;
@@ -312,6 +376,9 @@ public class GameMemoryService {
         }
     }
 
+    /**
+     * Mutable profile accumulator; converted to immutable snapshots for strategy consumption.
+     */
     private static final class MutablePlayerProfile {
 
         private final int playerId;
@@ -339,6 +406,9 @@ public class GameMemoryService {
             this.playerId = playerId;
         }
 
+        /**
+         * Stores latest tower strength observations from request payload.
+         */
         private void observeVisibility(int turn, int level, int durability) {
             if (lastSeenTurn != turn) {
                 turnsObserved++;
@@ -348,19 +418,31 @@ public class GameMemoryService {
             knownDurability = Math.max(knownDurability, durability);
         }
 
+        /**
+         * Records a plain peace/alliance signal sent to us.
+         */
         private void recordPeaceOffer(int turn) {
             peaceOffersToUs++;
             lastPeaceOfferTurn = turn;
         }
 
+        /**
+         * Records a coordination message (ally + attack target).
+         */
         private void recordCoordinationOffer() {
             coordinationOffersToUs++;
         }
 
+        /**
+         * Records direct threat declaration against us.
+         */
         private void recordThreatDeclaration(int turn) {
             threatDeclarationsToUs++;
         }
 
+        /**
+         * Records combat activity and separates direct attacks on us from others.
+         */
         private void recordAttack(int turn, boolean attackedUs, int troops) {
             int safeTroops = Math.max(troops, 0);
             totalAttacks++;
@@ -376,6 +458,9 @@ public class GameMemoryService {
             attacksAgainstOthersTroops += safeTroops;
         }
 
+        /**
+         * Maintains activity streak counters used for AFK hoarder detection.
+         */
         private void recordActivityPattern(boolean attackedAnyoneThisTurn) {
             if (attackedAnyoneThisTurn) {
                 consecutiveAttackTurns++;
@@ -386,6 +471,9 @@ public class GameMemoryService {
             consecutiveAttackTurns = 0;
         }
 
+        /**
+         * Marks one betrayal event per turn.
+         */
         private void recordBetrayal(int turn) {
             if (lastBetrayalTurn != null && lastBetrayalTurn == turn) {
                 return;
@@ -394,6 +482,9 @@ public class GameMemoryService {
             lastBetrayalTurn = turn;
         }
 
+        /**
+         * Converts mutable state to immutable strategy-facing snapshot.
+         */
         private PlayerProfileSnapshot toSnapshot(int latestLevel, int latestDurability) {
             return new PlayerProfileSnapshot(
                     playerId,

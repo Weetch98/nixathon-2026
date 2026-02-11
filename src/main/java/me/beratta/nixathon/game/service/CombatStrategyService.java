@@ -18,6 +18,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * Main combat decision engine.
+ * <p>
+ * Produces one turn of combat actions (`armor`, `attack`, `upgrade`) from current
+ * state + historical behavior profiles + fatigue forecast.
+ */
 @Service
 public class CombatStrategyService {
 
@@ -42,6 +48,9 @@ public class CombatStrategyService {
         this.fatigueService = fatigueService;
     }
 
+    /**
+     * Plans a complete combat response and guarantees response safety through sanitization.
+     */
     public List<CombatActionResponse> planCombat(CombatRequest request) {
         long startNanos = System.nanoTime();
         List<EnemyTowerState> aliveEnemies = request.enemyTowers().stream()
@@ -62,6 +71,7 @@ public class CombatStrategyService {
             return List.of();
         }
 
+        // 1) Refresh long-term profiles and derive strategic signals.
         gameMemoryService.observeCombatTurn(request);
         Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy = gameMemoryService
                 .getPlayerProfiles(request.gameId(), aliveEnemies);
@@ -75,6 +85,7 @@ public class CombatStrategyService {
                 .forecast(request.turn(), aliveEnemies.size(), duelStartTurn);
         CombatPosture posture = determinePosture(request, aliveEnemies.size(), threatByEnemy, fatigue);
 
+        // 2) Estimate defensive needs first, then decide whether economy upgrade is safe.
         int expectedIncomingDamage = estimateIncomingDamage(aliveEnemies, threatByEnemy, profilesByEnemy, posture);
         int baselineArmorSpend = baselineArmorSpend(playerTower, expectedIncomingDamage, totalResources, posture);
         int upgradeCost = economyService.upgradeCost(playerTower.level());
@@ -90,6 +101,7 @@ public class CombatStrategyService {
                 upgradeCost
         );
 
+        // 3) Allocate resources to attack planning based on posture/fatigue urgency.
         int resourcesAfterUpgrade = shouldUpgrade ? totalResources - upgradeCost : totalResources;
         List<EnemyTowerState> rankedTargets = rankTargets(
                 request.turn(),
@@ -114,6 +126,7 @@ public class CombatStrategyService {
         );
         int resourcesAfterDefense = Math.max(resourcesAfterUpgrade - armorSpend, 0);
 
+        // 4) Build candidate actions and sanitize so API contract can never be violated.
         Map<Integer, Integer> attacks = planAttacks(
                 rankedTargets,
                 profilesByEnemy,
@@ -167,6 +180,9 @@ public class CombatStrategyService {
         return sanitizedActions;
     }
 
+    /**
+     * Chooses a high-level tactical posture for the turn.
+     */
     private CombatPosture determinePosture(
             CombatRequest request,
             int aliveEnemyCount,
@@ -188,6 +204,9 @@ public class CombatStrategyService {
         return CombatPosture.BALANCED;
     }
 
+    /**
+     * Predicts likely incoming damage from threat map + volatility profile.
+     */
     private int estimateIncomingDamage(
             List<EnemyTowerState> aliveEnemies,
             Map<Integer, Integer> threatByEnemy,
@@ -213,6 +232,9 @@ public class CombatStrategyService {
         return Math.max(expectedIncoming, 0);
     }
 
+    /**
+     * Computes baseline armor investment for this turn before offensive allocation.
+     */
     private int baselineArmorSpend(
             TowerState playerTower,
             int expectedIncomingDamage,
@@ -225,6 +247,9 @@ public class CombatStrategyService {
         return Math.min(additionalArmorNeeded, defenseCap);
     }
 
+    /**
+     * Adds HP/posture-sensitive armor buffer on top of incoming damage estimate.
+     */
     private int safetyBuffer(int hp, CombatPosture posture) {
         int baseline;
         if (hp <= 25) {
@@ -244,6 +269,9 @@ public class CombatStrategyService {
         return baseline;
     }
 
+    /**
+     * Upper-bounds defense allocation by tactical posture.
+     */
     private double defenseShare(CombatPosture posture) {
         return switch (posture) {
             case SURVIVAL -> 0.70;
@@ -253,6 +281,9 @@ public class CombatStrategyService {
         };
     }
 
+    /**
+     * Determines whether spending on upgrade has acceptable survival and ROI risk this turn.
+     */
     private boolean shouldUpgrade(
             CombatRequest request,
             CombatPosture posture,
@@ -289,6 +320,9 @@ public class CombatStrategyService {
         return projectedUpgradeReturn >= (int) Math.round(upgradeCost * 0.60);
     }
 
+    /**
+     * Refines armor spend after considering immediate kill windows and fatigue pressure.
+     */
     private int planArmorSpend(
             TowerState playerTower,
             EnemyTowerState primaryTarget,
@@ -324,6 +358,9 @@ public class CombatStrategyService {
         return Math.max(0, Math.min(armorSpend, resourcesAfterUpgrade));
     }
 
+    /**
+     * Orders enemies for attack allocation.
+     */
     private List<EnemyTowerState> rankTargets(
             int turn,
             List<EnemyTowerState> enemies,
@@ -352,6 +389,10 @@ public class CombatStrategyService {
                 .toList();
     }
 
+    /**
+     * Composite target score that blends immediate threat, profile risk, diplomacy signals,
+     * and fatigue urgency.
+     */
     private double targetPriority(
             int turn,
             EnemyTowerState enemy,
@@ -420,6 +461,9 @@ public class CombatStrategyService {
         return score;
     }
 
+    /**
+     * Allocates troops across secure eliminations first, then pressure damage.
+     */
     private Map<Integer, Integer> planAttacks(
             List<EnemyTowerState> rankedTargets,
             Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
@@ -456,16 +500,19 @@ public class CombatStrategyService {
             remainingBudget -= killCost;
             securedEliminations++;
 
+            // In pure survival posture avoid overextending once one elimination is secured.
             if (securedEliminations >= eliminationLimit && posture == CombatPosture.SURVIVAL) {
                 break;
             }
         }
 
+        // Spend leftover troops as pressure on the best remaining focus target.
         if (remainingBudget > 0) {
             EnemyTowerState focusTarget = chooseFocusTarget(rankedTargets, attacks.keySet(), commitment);
             if (focusTarget != null) {
                 int pressureTroops = remainingBudget;
                 if (posture == CombatPosture.SURVIVAL && securedEliminations == 0) {
+                    // Keep some resources uncommitted in emergency posture unless necessary.
                     pressureTroops = Math.max(8, remainingBudget / 2);
                     pressureTroops = Math.min(pressureTroops, remainingBudget);
                 }
@@ -481,6 +528,9 @@ public class CombatStrategyService {
         return attacks;
     }
 
+    /**
+     * Decides whether we should commit full troops for a kill on a target.
+     */
     private boolean shouldSecureKill(
             EnemyTowerState target,
             GameMemoryService.PlayerProfileSnapshot profile,
@@ -509,6 +559,9 @@ public class CombatStrategyService {
         return killCost <= Math.max(18, attackBudget / 3);
     }
 
+    /**
+     * Picks pressure target after eliminations, preferring negotiation focus when available.
+     */
     private EnemyTowerState chooseFocusTarget(
             List<EnemyTowerState> rankedTargets,
             Set<Integer> alreadyAttackedTargets,
@@ -530,6 +583,9 @@ public class CombatStrategyService {
         return rankedTargets.isEmpty() ? null : rankedTargets.getFirst();
     }
 
+    /**
+     * Extracts useful diplomacy signals from incoming combat payload.
+     */
     private DiplomacySignals analyzeDiplomacy(CombatRequest request) {
         int selfId = request.playerTower().playerId();
 
@@ -553,6 +609,9 @@ public class CombatStrategyService {
         return new DiplomacySignals(focusBoostByTarget, peaceOfferingEnemies, explicitThreatEnemies);
     }
 
+    /**
+     * Final defensive layer: drops any invalid/duplicate/overspending action before returning.
+     */
     private List<CombatActionResponse> sanitizeActions(
             List<CombatActionResponse> proposedActions,
             int totalResources,
@@ -625,6 +684,7 @@ public class CombatStrategyService {
                 continue;
             }
 
+            // Any unknown action shape is dropped defensively.
             log.warn("Dropping unknown combat action type action={}", action);
         }
 
@@ -640,6 +700,9 @@ public class CombatStrategyService {
         return List.copyOf(sanitized);
     }
 
+    /**
+     * Parsed diplomacy signals used to influence target scoring.
+     */
     private record DiplomacySignals(
             Map<Integer, Integer> focusBoostByTarget,
             Set<Integer> peaceOfferingEnemies,
@@ -647,6 +710,9 @@ public class CombatStrategyService {
     ) {
     }
 
+    /**
+     * Tactical mode for the current turn.
+     */
     private enum CombatPosture {
         SURVIVAL,
         BALANCED,

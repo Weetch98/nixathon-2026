@@ -14,6 +14,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * Builds negotiation messages for the current turn.
+ * <p>
+ * Negotiation is treated as soft influence, not a binding treaty:
+ * we prioritize information warfare and coordinated pressure while avoiding
+ * over-trusting players with hostile/betrayal history.
+ */
 @Service
 public class NegotiationStrategyService {
 
@@ -30,6 +37,9 @@ public class NegotiationStrategyService {
         this.gameMemoryService = gameMemoryService;
     }
 
+    /**
+     * Creates the outgoing diplomacy message list for a negotiation phase.
+     */
     public List<NegotiationMessage> planNegotiation(NegotiationRequest request) {
         log.debug(
                 "Planning negotiation game={} turn={} self={} resources={} enemies={} observedActions={}",
@@ -44,6 +54,7 @@ public class NegotiationStrategyService {
         List<EnemyTowerState> enemies = request.enemyTowers().stream()
                 .filter(enemy -> enemy.hp() > 0)
                 .toList();
+        // Keep long-term behavioral memory updated even if we end up sending no message.
         gameMemoryService.observeNegotiationTurn(request.gameId(), request.turn(), enemies);
 
         if (enemies.size() <= 1) {
@@ -72,6 +83,7 @@ public class NegotiationStrategyService {
         List<NegotiationMessage> messages = new ArrayList<>();
         Set<Integer> usedRecipients = new HashSet<>();
 
+        // Start with one explicit peace candidate if we have a credible partner.
         EnemyTowerState explicitAllianceCandidate = chooseExplicitAllianceCandidate(
                 allianceCandidates,
                 hostilityByEnemy,
@@ -92,10 +104,12 @@ public class NegotiationStrategyService {
             if (isUnreliableRecipient(allyCandidate, hostilityByEnemy, profilesByEnemy)) {
                 continue;
             }
+            // Non-empty attack target communicates a likely focus fire plan.
             messages.add(new NegotiationMessage(allyCandidate.playerId(), primaryTarget.playerId()));
             usedRecipients.add(allyCandidate.playerId());
         }
 
+        // Fallback: if every candidate looked unreliable, still send one directional signal.
         if (messages.isEmpty() && messageLimit > 0 && !allianceCandidates.isEmpty()) {
             EnemyTowerState fallbackRecipient = allianceCandidates.getFirst();
             messages.add(new NegotiationMessage(fallbackRecipient.playerId(), primaryTarget.playerId()));
@@ -114,6 +128,9 @@ public class NegotiationStrategyService {
         return List.copyOf(messages);
     }
 
+    /**
+     * Picks the best enemy to frame as the attack focus in negotiation messages.
+     */
     private EnemyTowerState pickPrimaryTarget(
             List<EnemyTowerState> enemies,
             Map<Integer, Integer> hostilityByEnemy,
@@ -125,6 +142,9 @@ public class NegotiationStrategyService {
                 .orElseThrow();
     }
 
+    /**
+     * Orders possible message recipients by expected reliability/utility.
+     */
     private List<EnemyTowerState> rankAllianceCandidates(
             List<EnemyTowerState> enemies,
             Map<Integer, Integer> hostilityByEnemy,
@@ -140,6 +160,9 @@ public class NegotiationStrategyService {
                 .toList();
     }
 
+    /**
+     * Limits diplomacy fanout to reduce noise in high-risk or late-game states.
+     */
     private int chooseMessageLimit(Map<Integer, Integer> hostilityByEnemy, int enemyCount, int turn) {
         if (enemyCount <= 2) {
             return 1;
@@ -159,6 +182,9 @@ public class NegotiationStrategyService {
         return Math.min(desiredMessageCount, Math.max(enemyCount - 1, 0));
     }
 
+    /**
+     * Finds one candidate worthy of an explicit peace message (attackTargetId = null).
+     */
     private EnemyTowerState chooseExplicitAllianceCandidate(
             List<EnemyTowerState> allianceCandidates,
             Map<Integer, Integer> hostilityByEnemy,
@@ -180,6 +206,9 @@ public class NegotiationStrategyService {
         return null;
     }
 
+    /**
+     * Rejects recipients with strong signs of unreliability.
+     */
     private boolean isUnreliableRecipient(
             EnemyTowerState candidate,
             Map<Integer, Integer> hostilityByEnemy,
@@ -200,6 +229,9 @@ public class NegotiationStrategyService {
         return profile.threatDeclarationsToUs() > 0 && hostility > 35;
     }
 
+    /**
+     * Scores enemies as strategic attack focus candidates.
+     */
     private double targetPriority(
             EnemyTowerState enemy,
             Map<Integer, Integer> hostilityByEnemy,
@@ -217,11 +249,15 @@ public class NegotiationStrategyService {
             score += profile.betrayalsAgainstUs() * 12.0;
         }
         if (turn >= 18) {
+            // Late game: emphasize high-level survivors to avoid resource snowball losses.
             score += enemy.level() * 2.5;
         }
         return score;
     }
 
+    /**
+     * Scores enemy as a negotiation recipient candidate.
+     */
     private double allianceScore(
             EnemyTowerState enemy,
             Map<Integer, Integer> hostilityByEnemy,
