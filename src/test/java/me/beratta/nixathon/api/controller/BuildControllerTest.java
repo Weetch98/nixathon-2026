@@ -9,10 +9,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class BuildControllerTest {
 
     @Test
-    void shouldReturnConfiguredBuildNumber() {
-        BuildController controller = new BuildController(new BuildInfoService("test-build-123"));
+    void shouldReturnConfiguredBuildAndCommit() {
+        BuildController controller = new BuildController(new BuildInfoService("test-build-123", "abc1234"));
         BuildResponse response = controller.getBuild();
 
         assertEquals("test-build-123", response.build());
+        assertEquals("abc1234", response.commit());
     }
 }

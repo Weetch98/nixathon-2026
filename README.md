@@ -106,11 +106,15 @@ You can also deploy with:
 
 ```json
 {
-  "build": "dev-local"
+  "build": "dev-local",
+  "commit": "local"
 }
 ```
 
-Build number is read from `build.properties` via key `build.number`.
+Build metadata is read from `build.properties`:
+- `build.number`
+- `build.commit`
+
 Default file: `src/main/resources/build.properties`.
 Optional override at runtime: `./build.properties` next to the jar/container working directory.
 

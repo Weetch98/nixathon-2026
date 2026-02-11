@@ -11,13 +11,22 @@ public class BuildInfoService {
     private static final Logger log = LoggerFactory.getLogger(BuildInfoService.class);
 
     private final String buildNumber;
+    private final String commitNumber;
 
-    public BuildInfoService(@Value("${build.number:unknown}") String buildNumber) {
+    public BuildInfoService(
+            @Value("${build.number:unknown}") String buildNumber,
+            @Value("${build.commit:unknown}") String commitNumber
+    ) {
         this.buildNumber = buildNumber;
-        log.info("Build information loaded build={}", buildNumber);
+        this.commitNumber = commitNumber;
+        log.info("Build information loaded build={} commit={}", buildNumber, commitNumber);
     }
 
     public String getBuildNumber() {
         return buildNumber;
+    }
+
+    public String getCommitNumber() {
+        return commitNumber;
     }
 }

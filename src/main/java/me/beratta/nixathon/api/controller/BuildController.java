@@ -21,7 +21,8 @@ public class BuildController {
     @GetMapping("/build")
     public BuildResponse getBuild() {
         String buildNumber = buildInfoService.getBuildNumber();
-        log.debug("Build endpoint requested build={}", buildNumber);
-        return new BuildResponse(buildNumber);
+        String commitNumber = buildInfoService.getCommitNumber();
+        log.debug("Build endpoint requested build={} commit={}", buildNumber, commitNumber);
+        return new BuildResponse(buildNumber, commitNumber);
     }
 }

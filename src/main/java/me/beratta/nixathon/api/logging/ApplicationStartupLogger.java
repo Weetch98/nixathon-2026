@@ -29,9 +29,10 @@ public class ApplicationStartupLogger {
         String activeProfiles = Arrays.toString(environment.getActiveProfiles());
 
         log.info(
-                "Application ready app={} build={} javaVersion={} activeProfiles={}",
+                "Application ready app={} build={} commit={} javaVersion={} activeProfiles={}",
                 appName,
                 buildInfoService.getBuildNumber(),
+                buildInfoService.getCommitNumber(),
                 System.getProperty("java.version"),
                 activeProfiles
         );
