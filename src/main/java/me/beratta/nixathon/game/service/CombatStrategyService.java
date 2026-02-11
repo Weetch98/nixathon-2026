@@ -40,7 +40,9 @@ public class CombatStrategyService {
         totalResources = totalResources - armorSpend - 1;
         boolean doUpgrade = totalResources > upgradeCost;
 
-        proposedActions.add(CombatActionResponse.armor(armorSpend));
+        if (armorSpend > 0) {
+            proposedActions.add(CombatActionResponse.armor(armorSpend));
+        }
         proposedActions.add(CombatActionResponse.attack(targetId, 1));
         if (doUpgrade) {
             proposedActions.add(CombatActionResponse.upgrade());
