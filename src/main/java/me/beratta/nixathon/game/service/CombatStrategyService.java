@@ -105,15 +105,15 @@ public class CombatStrategyService {
         );
 
         List<CombatActionResponse> proposedActions = new ArrayList<>();
-        if (armorSpend > 0) {
-            proposedActions.add(CombatActionResponse.armor(armorSpend));
-        }
-        for (Map.Entry<Integer, Integer> attack : attacks.entrySet()) {
-            proposedActions.add(CombatActionResponse.attack(attack.getKey(), attack.getValue()));
-        }
         if (shouldUpgrade) {
             proposedActions.add(CombatActionResponse.upgrade());
         }
+        if (armorSpend > 0) {
+            proposedActions.add(CombatActionResponse.armor(armorSpend));
+        }
+//        for (Map.Entry<Integer, Integer> attack : attacks.entrySet()) {
+//            proposedActions.add(CombatActionResponse.attack(attack.getKey(), attack.getValue()));
+//        }
 
         List<CombatActionResponse> sanitizedActions = sanitizeActions(proposedActions, totalResources, upgradeCost);
         long durationMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
@@ -178,65 +178,47 @@ public class CombatStrategyService {
     }
 
     private boolean shouldUpgrade(
-            CombatRequest request,
-            int aliveEnemyCount,
-            int totalResources,
-            int baselineArmorSpend,
-            int expectedIncomingDamage,
-            int upgradeCost
+        CombatRequest request,
+        int aliveEnemyCount,
+        int totalResources,
+        int baselineArmorSpend,
+        int expectedIncomingDamage,
+        int upgradeCost
     ) {
-        if (upgradeCost > totalResources) {
-            return false;
-        }
-
-        int resourcesAfterUpgrade = totalResources - upgradeCost;
-        int defenseFloorAfterUpgrade = Math.max(0, baselineArmorSpend - 4);
-        if (resourcesAfterUpgrade < defenseFloorAfterUpgrade) {
-            return false;
-        }
-
-        boolean duelPressureWindow = aliveEnemyCount <= 2 && request.turn() >= 8;
-        if (duelPressureWindow) {
-            return false;
-        }
-
-        int turnsRemaining = Math.max(0, MAX_TURNS - request.turn());
-        int projectedUpgradeReturn = economyService.estimatedUpgradeReturn(request.playerTower().level(), turnsRemaining);
-
-        boolean earlyEconomyWindow = request.turn() <= 10
-                && request.playerTower().level() <= 3
-                && aliveEnemyCount >= 3
-                && expectedIncomingDamage < request.playerTower().hp();
-
-        boolean resourceOverflowWindow = totalResources >= upgradeCost + baselineArmorSpend + 55;
-        boolean returnWindow = projectedUpgradeReturn >= (upgradeCost / 2);
-
-        return (earlyEconomyWindow && returnWindow) || resourceOverflowWindow;
+        // Always upgrade whenever we can afford it
+        return upgradeCost <= totalResources;
     }
 
     private int planArmorSpend(
-            TowerState playerTower,
-            int aliveEnemyCount,
-            EnemyTowerState primaryTarget,
-            int baselineArmorSpend,
-            int resourcesAfterUpgrade
+        TowerState playerTower,
+        int aliveEnemyCount,
+        EnemyTowerState primaryTarget,
+        int baselineArmorSpend,
+        int resourcesAfterUpgrade
     ) {
-        int armorSpend = Math.min(baselineArmorSpend, resourcesAfterUpgrade);
+        // Calculate armor budget based on tower level and upgrade status
+        int armorBudget;
 
-        if (primaryTarget == null) {
-            return armorSpend;
+        if (playerTower.level() >= 3) {
+            // Level 3+: spend 70% of available resources on armor
+            armorBudget = (int) Math.round(resourcesAfterUpgrade * 0.70);
+        } else {
+            // Level 1-2: Check if we just upgraded this turn or will upgrade
+            int upgradeCost = economyService.upgradeCost(playerTower.level());
+            boolean willUpgradeThisTurn = upgradeCost <= resourcesAfterUpgrade;
+
+            if (willUpgradeThisTurn) {
+                // After upgrade: 50% of remaining budget
+                int resourcesAfterUpgradeDeduction = resourcesAfterUpgrade - upgradeCost;
+                armorBudget = (int) Math.round(resourcesAfterUpgradeDeduction * 0.50);
+            } else {
+                // Before upgrade (saving for it): only 15% on armor
+                armorBudget = (int) Math.round(resourcesAfterUpgrade * 0.15);
+            }
         }
 
-        int killCost = primaryTarget.effectiveDurability();
-        boolean hasKillWindow = killCost <= resourcesAfterUpgrade
-                && (aliveEnemyCount == 1 || primaryTarget.hp() <= 30);
-
-        if (!hasKillWindow || armorSpend <= 0) {
-            return armorSpend;
-        }
-
-        int maxArmorWhileStillKilling = Math.max(0, resourcesAfterUpgrade - killCost);
-        return Math.min(armorSpend, maxArmorWhileStillKilling);
+        // Don't exceed baseline armor need
+        return Math.min(armorBudget, baselineArmorSpend);
     }
 
     private List<EnemyTowerState> rankTargets(
