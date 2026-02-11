@@ -3,6 +3,7 @@ package me.beratta.nixathon.game.service;
 import me.beratta.nixathon.game.dto.CombatActionResponse;
 import me.beratta.nixathon.game.dto.CombatRequest;
 import me.beratta.nixathon.game.dto.EnemyTowerState;
+import me.beratta.nixathon.game.dto.PlayerAttack;
 import me.beratta.nixathon.game.dto.PlayerDiplomacy;
 import me.beratta.nixathon.game.dto.TowerState;
 import org.slf4j.Logger;
@@ -77,6 +78,13 @@ public class CombatStrategyService {
                 .getPlayerProfiles(request.gameId(), aliveEnemies);
         Map<Integer, Integer> threatByEnemy = threatAssessmentService.assessCombatThreat(request, profilesByEnemy);
         DiplomacySignals diplomacySignals = analyzeDiplomacy(request);
+        Map<Integer, Integer> predictedCounterTroopsByEnemy = estimateCounterTroopsByEnemy(
+                request,
+                aliveEnemies,
+                threatByEnemy,
+                profilesByEnemy,
+                diplomacySignals
+        );
         GameMemoryService.NegotiationCommitment commitment = gameMemoryService
                 .findCommitment(request.gameId(), request.turn())
                 .orElse(null);
@@ -86,15 +94,15 @@ public class CombatStrategyService {
         CombatPosture posture = determinePosture(request, aliveEnemies.size(), threatByEnemy, fatigue);
 
         // 2) Estimate defensive needs first, then decide whether economy upgrade is safe.
-        int expectedIncomingDamage = estimateIncomingDamage(aliveEnemies, threatByEnemy, profilesByEnemy, posture);
+        int expectedIncomingDamage = estimateIncomingDamage(predictedCounterTroopsByEnemy, profilesByEnemy, posture);
         int baselineArmorSpend = baselineArmorSpend(playerTower, expectedIncomingDamage, totalResources, posture);
         int upgradeCost = economyService.upgradeCost(playerTower.level());
 
         boolean shouldUpgrade = shouldUpgrade(
                 request,
+                aliveEnemies,
                 posture,
                 fatigue,
-                aliveEnemies.size(),
                 totalResources,
                 baselineArmorSpend,
                 expectedIncomingDamage,
@@ -121,6 +129,7 @@ public class CombatStrategyService {
                 primaryTarget,
                 baselineArmorSpend,
                 resourcesAfterUpgrade,
+                predictedCounterTroopsByEnemy,
                 posture,
                 fatigue
         );
@@ -133,9 +142,30 @@ public class CombatStrategyService {
                 threatByEnemy,
                 commitment,
                 resourcesAfterDefense,
+                predictedCounterTroopsByEnemy,
                 posture,
                 fatigue
         );
+        int cancellationMitigation = estimateCancellationMitigation(attacks, predictedCounterTroopsByEnemy);
+        int expectedIncomingAfterCancellation = Math.max(0, expectedIncomingDamage - cancellationMitigation);
+        int revisedBaselineArmorSpend = baselineArmorSpend(playerTower, expectedIncomingAfterCancellation, resourcesAfterUpgrade, posture);
+        int revisedArmorSpend = planArmorSpend(
+                playerTower,
+                primaryTarget,
+                revisedBaselineArmorSpend,
+                resourcesAfterUpgrade,
+                predictedCounterTroopsByEnemy,
+                posture,
+                fatigue
+        );
+        if (revisedArmorSpend < armorSpend) {
+            int freedTroops = armorSpend - revisedArmorSpend;
+            armorSpend = revisedArmorSpend;
+            EnemyTowerState reinforcementTarget = chooseFocusTarget(rankedTargets, Set.of(), commitment);
+            if (reinforcementTarget != null && freedTroops > 0) {
+                attacks.merge(reinforcementTarget.playerId(), freedTroops, Integer::sum);
+            }
+        }
 
         List<CombatActionResponse> proposedActions = new ArrayList<>();
         if (armorSpend > 0) {
@@ -152,13 +182,14 @@ public class CombatStrategyService {
         long durationMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
 
         log.info(
-                "Combat planned game={} turn={} posture={} fatigueActive={} fatigueDamage={} expectedIncomingDamage={} armorSpend={} shouldUpgrade={} proposedActions={} finalActions={} durationMs={}",
+                "Combat planned game={} turn={} posture={} fatigueActive={} fatigueDamage={} expectedIncomingDamage={} expectedIncomingAfterCancellation={} armorSpend={} shouldUpgrade={} proposedActions={} finalActions={} durationMs={}",
                 request.gameId(),
                 request.turn(),
                 posture,
                 fatigue.active(),
                 fatigue.currentDamage(),
                 expectedIncomingDamage,
+                expectedIncomingAfterCancellation,
                 armorSpend,
                 shouldUpgrade,
                 proposedActions.size(),
@@ -166,10 +197,11 @@ public class CombatStrategyService {
                 durationMs
         );
         log.debug(
-                "Combat planning details game={} turn={} threatByEnemy={} profiles={} commitment={} rankedTargets={} attacks={} actions={}",
+                "Combat planning details game={} turn={} threatByEnemy={} predictedCounterTroopsByEnemy={} profiles={} commitment={} rankedTargets={} attacks={} actions={}",
                 request.gameId(),
                 request.turn(),
                 threatByEnemy,
+                predictedCounterTroopsByEnemy,
                 profilesByEnemy,
                 commitment,
                 rankedTargets.stream().map(EnemyTowerState::playerId).toList(),
@@ -205,28 +237,79 @@ public class CombatStrategyService {
     }
 
     /**
-     * Predicts likely incoming damage from threat map + volatility profile.
+     * Estimates troops likely aimed at us this turn for each enemy.
+     * <p>
+     * This drives both armor planning and cancellation-aware attack sizing.
      */
-    private int estimateIncomingDamage(
+    private Map<Integer, Integer> estimateCounterTroopsByEnemy(
+            CombatRequest request,
             List<EnemyTowerState> aliveEnemies,
             Map<Integer, Integer> threatByEnemy,
             Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
+            DiplomacySignals diplomacySignals
+    ) {
+        int selfId = request.playerTower().playerId();
+        Map<Integer, Integer> lastTurnTroopsToUsByEnemy = new HashMap<>();
+        for (PlayerAttack attack : request.previousAttacks()) {
+            if (attack.action().targetId() == selfId) {
+                lastTurnTroopsToUsByEnemy.merge(attack.playerId(), attack.action().troopCount(), Integer::sum);
+            }
+        }
+
+        Map<Integer, Integer> counterTroopsByEnemy = new HashMap<>();
+        for (EnemyTowerState enemy : aliveEnemies) {
+            int enemyId = enemy.playerId();
+            GameMemoryService.PlayerProfileSnapshot profile = profilesByEnemy.get(enemyId);
+
+            int lastTurnTroops = lastTurnTroopsToUsByEnemy.getOrDefault(enemyId, 0);
+            int historicalAverage = 0;
+            if (profile != null && profile.attacksAgainstUsCount() > 0) {
+                historicalAverage = (int) Math.round((double) profile.attacksAgainstUsTroops() / profile.attacksAgainstUsCount());
+            }
+            int threatProjection = (int) Math.round(threatByEnemy.getOrDefault(enemyId, 0) * 0.35);
+            int predictedTroops = Math.max(lastTurnTroops, Math.max(historicalAverage, threatProjection));
+
+            if (profile != null && profile.consecutiveAttackTurns() >= 2) {
+                predictedTroops += 4;
+            }
+            if (diplomacySignals.explicitThreatEnemies().contains(enemyId)) {
+                predictedTroops += 6;
+            }
+            if (diplomacySignals.peaceOfferingEnemies().contains(enemyId)
+                    && profile != null
+                    && profile.betrayalsAgainstUs() == 0
+                    && profile.trustScore() >= 10) {
+                predictedTroops = (int) Math.floor(predictedTroops * 0.65);
+            }
+
+            counterTroopsByEnemy.put(enemyId, Math.max(0, Math.min(predictedTroops, 160)));
+        }
+
+        return Map.copyOf(counterTroopsByEnemy);
+    }
+
+    /**
+     * Predicts likely incoming damage from per-enemy incoming troop estimates.
+     */
+    private int estimateIncomingDamage(
+            Map<Integer, Integer> predictedCounterTroopsByEnemy,
+            Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
             CombatPosture posture
     ) {
-        int aggregateThreat = threatByEnemy.values().stream().mapToInt(Integer::intValue).sum();
-        double threatMultiplier = aliveEnemies.size() <= 2 ? 0.58 : 0.45;
-        int expectedIncoming = (int) Math.round(aggregateThreat * threatMultiplier);
+        int expectedIncoming = predictedCounterTroopsByEnemy.values().stream()
+                .mapToInt(Integer::intValue)
+                .sum();
 
         int volatilityPenalty = profilesByEnemy.values().stream()
-                .mapToInt(profile -> (profile.betrayalsAgainstUs() * 4) + (profile.consecutiveAttackTurns() * 2))
+                .mapToInt(profile -> (profile.betrayalsAgainstUs() * 3) + (profile.consecutiveAttackTurns() * 2))
                 .sum();
         expectedIncoming += volatilityPenalty;
 
         if (posture == CombatPosture.SURVIVAL) {
-            expectedIncoming += 8;
+            expectedIncoming += 6;
         }
         if (posture == CombatPosture.CLOSER) {
-            expectedIncoming = Math.max(0, expectedIncoming - 6);
+            expectedIncoming = Math.max(0, expectedIncoming - 5);
         }
 
         return Math.max(expectedIncoming, 0);
@@ -286,14 +369,26 @@ public class CombatStrategyService {
      */
     private boolean shouldUpgrade(
             CombatRequest request,
+            List<EnemyTowerState> aliveEnemies,
             CombatPosture posture,
             FatigueService.FatigueForecast fatigue,
-            int aliveEnemyCount,
             int totalResources,
             int baselineArmorSpend,
             int expectedIncomingDamage,
             int upgradeCost
     ) {
+        if (shouldForceLevelTieBreakUpgrade(
+                request,
+                aliveEnemies,
+                fatigue,
+                totalResources,
+                baselineArmorSpend,
+                expectedIncomingDamage,
+                upgradeCost
+        )) {
+            return true;
+        }
+
         if (upgradeCost > totalResources) {
             return false;
         }
@@ -303,7 +398,7 @@ public class CombatStrategyService {
         if (fatigue.active() || fatigue.turnsUntilStart() <= 3) {
             return false;
         }
-        if (request.turn() > 9 || aliveEnemyCount < 3) {
+        if (request.turn() > 9 || aliveEnemies.size() < 3) {
             return false;
         }
         if (expectedIncomingDamage >= (request.playerTower().hp() / 2)) {
@@ -321,6 +416,45 @@ public class CombatStrategyService {
     }
 
     /**
+     * Late duel override: if fatigue can force a simultaneous death, buy one level to win tie-breaks.
+     */
+    private boolean shouldForceLevelTieBreakUpgrade(
+            CombatRequest request,
+            List<EnemyTowerState> aliveEnemies,
+            FatigueService.FatigueForecast fatigue,
+            int totalResources,
+            int baselineArmorSpend,
+            int expectedIncomingDamage,
+            int upgradeCost
+    ) {
+        if (aliveEnemies.size() != 1) {
+            return false;
+        }
+
+        EnemyTowerState duelEnemy = aliveEnemies.getFirst();
+        int currentLevel = request.playerTower().level();
+        int upgradedLevel = currentLevel + 1;
+        if (upgradedLevel <= duelEnemy.level()) {
+            return false;
+        }
+        if (upgradeCost > totalResources) {
+            return false;
+        }
+
+        boolean lateOrFatiguePressure = fatigue.active() || fatigue.turnsUntilStart() <= 1 || request.turn() >= 22;
+        if (!lateOrFatiguePressure) {
+            return false;
+        }
+
+        int resourcesAfterUpgrade = totalResources - upgradeCost;
+        int minimumDefensiveReserve = Math.max(8, baselineArmorSpend / 2);
+        if (resourcesAfterUpgrade < minimumDefensiveReserve) {
+            return false;
+        }
+        return expectedIncomingDamage < request.playerTower().hp();
+    }
+
+    /**
      * Refines armor spend after considering immediate kill windows and fatigue pressure.
      */
     private int planArmorSpend(
@@ -328,6 +462,7 @@ public class CombatStrategyService {
             EnemyTowerState primaryTarget,
             int baselineArmorSpend,
             int resourcesAfterUpgrade,
+            Map<Integer, Integer> predictedCounterTroopsByEnemy,
             CombatPosture posture,
             FatigueService.FatigueForecast fatigue
     ) {
@@ -337,7 +472,8 @@ public class CombatStrategyService {
             return armorSpend;
         }
 
-        int killCost = primaryTarget.effectiveDurability();
+        int killCost = primaryTarget.effectiveDurability() + predictedCounterTroopsByEnemy
+                .getOrDefault(primaryTarget.playerId(), 0);
         boolean immediateKillWindow = killCost <= resourcesAfterUpgrade;
         if (immediateKillWindow
                 && (posture == CombatPosture.CLOSER
@@ -470,6 +606,7 @@ public class CombatStrategyService {
             Map<Integer, Integer> threatByEnemy,
             GameMemoryService.NegotiationCommitment commitment,
             int attackBudget,
+            Map<Integer, Integer> predictedCounterTroopsByEnemy,
             CombatPosture posture,
             FatigueService.FatigueForecast fatigue
     ) {
@@ -487,12 +624,22 @@ public class CombatStrategyService {
                 break;
             }
 
-            int killCost = target.effectiveDurability();
+            int killCost = target.effectiveDurability() + predictedCounterTroopsByEnemy
+                    .getOrDefault(target.playerId(), 0);
             GameMemoryService.PlayerProfileSnapshot profile = profilesByEnemy.get(target.playerId());
             if (killCost > remainingBudget) {
                 continue;
             }
-            if (!shouldSecureKill(target, profile, threatByEnemy.getOrDefault(target.playerId(), 0), rankedTargets.size(), attackBudget, posture, fatigue)) {
+            if (!shouldSecureKill(
+                    target,
+                    killCost,
+                    profile,
+                    threatByEnemy.getOrDefault(target.playerId(), 0),
+                    rankedTargets.size(),
+                    attackBudget,
+                    posture,
+                    fatigue
+            )) {
                 continue;
             }
 
@@ -529,10 +676,26 @@ public class CombatStrategyService {
     }
 
     /**
+     * Estimates how many incoming troops are neutralized by mutual attack cancellation.
+     */
+    private int estimateCancellationMitigation(
+            Map<Integer, Integer> attacks,
+            Map<Integer, Integer> predictedCounterTroopsByEnemy
+    ) {
+        int mitigation = 0;
+        for (Map.Entry<Integer, Integer> attack : attacks.entrySet()) {
+            int predictedCounter = predictedCounterTroopsByEnemy.getOrDefault(attack.getKey(), 0);
+            mitigation += Math.min(attack.getValue(), predictedCounter);
+        }
+        return mitigation;
+    }
+
+    /**
      * Decides whether we should commit full troops for a kill on a target.
      */
     private boolean shouldSecureKill(
             EnemyTowerState target,
+            int adjustedKillCost,
             GameMemoryService.PlayerProfileSnapshot profile,
             int threat,
             int rankedTargetCount,
@@ -540,12 +703,11 @@ public class CombatStrategyService {
             CombatPosture posture,
             FatigueService.FatigueForecast fatigue
     ) {
-        int killCost = target.effectiveDurability();
         if (rankedTargetCount == 1) {
             return true;
         }
         if (fatigue.active() || fatigue.turnsUntilStart() <= 2) {
-            return killCost <= attackBudget;
+            return adjustedKillCost <= attackBudget;
         }
         if (target.hp() <= 45 || threat >= 30) {
             return true;
@@ -554,9 +716,9 @@ public class CombatStrategyService {
             return true;
         }
         if (posture == CombatPosture.CLOSER || posture == CombatPosture.AGGRESSIVE) {
-            return killCost <= Math.max(22, attackBudget / 2);
+            return adjustedKillCost <= Math.max(22, attackBudget / 2);
         }
-        return killCost <= Math.max(18, attackBudget / 3);
+        return adjustedKillCost <= Math.max(18, attackBudget / 3);
     }
 
     /**

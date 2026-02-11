@@ -24,16 +24,9 @@ class CombatStrategyServiceTest {
 
     @Test
     void shouldGenerateOnlyValidAffordableActions() {
-        ThreatAssessmentService threatAssessmentService = new ThreatAssessmentService();
         EconomyService economyService = new EconomyService();
         GameMemoryService gameMemoryService = new GameMemoryService();
-        FatigueService fatigueService = new FatigueService();
-        CombatStrategyService combatStrategyService = new CombatStrategyService(
-                threatAssessmentService,
-                economyService,
-                gameMemoryService,
-                fatigueService
-        );
+        CombatStrategyService combatStrategyService = strategyService(gameMemoryService);
 
         gameMemoryService.storeNegotiationPlan(42L, 7, List.of(
                 new NegotiationMessage(200, 300),
@@ -97,5 +90,61 @@ class CombatStrategyServiceTest {
         assertTrue(spentResources <= request.playerTower().resources());
         assertEquals(attackedTargets.size(),
                 actions.stream().filter(action -> "attack".equals(action.type())).count());
+    }
+
+    @Test
+    void shouldUpgradeInLateDuelToWinLevelTieBreak() {
+        GameMemoryService gameMemoryService = new GameMemoryService();
+        CombatStrategyService combatStrategyService = strategyService(gameMemoryService);
+
+        CombatRequest request = new CombatRequest(
+                99L,
+                25,
+                new TowerState(100, 82, 12, 100, 2),
+                List.of(new EnemyTowerState(200, 90, 10, 2)),
+                List.of(),
+                List.of()
+        );
+
+        List<CombatActionResponse> actions = combatStrategyService.planCombat(request);
+
+        assertTrue(actions.stream().anyMatch(action -> "upgrade".equals(action.type())));
+    }
+
+    @Test
+    void shouldAccountForMutualCancellationWhenSizingKillShots() {
+        GameMemoryService gameMemoryService = new GameMemoryService();
+        CombatStrategyService combatStrategyService = strategyService(gameMemoryService);
+
+        CombatRequest request = new CombatRequest(
+                100L,
+                6,
+                new TowerState(100, 100, 40, 24, 1),
+                List.of(
+                        new EnemyTowerState(200, 8, 0, 1),
+                        new EnemyTowerState(201, 16, 0, 1)
+                ),
+                List.of(),
+                List.of(new PlayerAttack(200, new AttackAction(100, 20)))
+        );
+
+        List<CombatActionResponse> actions = combatStrategyService.planCombat(request);
+
+        CombatActionResponse attackOnSecondEnemy = actions.stream()
+                .filter(action -> "attack".equals(action.type()))
+                .filter(action -> action.targetId() != null && action.targetId() == 201)
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(attackOnSecondEnemy.troopCount() >= 17);
+    }
+
+    private CombatStrategyService strategyService(GameMemoryService gameMemoryService) {
+        return new CombatStrategyService(
+                new ThreatAssessmentService(),
+                new EconomyService(),
+                gameMemoryService,
+                new FatigueService()
+        );
     }
 }
