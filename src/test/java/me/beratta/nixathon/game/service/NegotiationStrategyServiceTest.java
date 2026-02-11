@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class NegotiationStrategyServiceTest {
 
     @Test
-    void shouldReturnUniqueAlliesAndPersistCommitment() {
+    void shouldReturnUniqueRecipientsAndPersistCommitment() {
         ThreatAssessmentService threatAssessmentService = new ThreatAssessmentService();
         GameMemoryService gameMemoryService = new GameMemoryService();
         NegotiationStrategyService negotiationStrategyService = new NegotiationStrategyService(
@@ -51,15 +51,20 @@ class NegotiationStrategyServiceTest {
         assertFalse(messages.isEmpty());
         assertTrue(messages.size() <= 3);
 
-        Set<Integer> allyIds = new HashSet<>();
+        Set<Integer> recipientIds = new HashSet<>();
+        long explicitAllianceMessages = 0;
         for (NegotiationMessage message : messages) {
-            assertTrue(allyIds.add(message.allyId()));
-            assertNotNull(message.attackTargetId());
+            assertTrue(recipientIds.add(message.allyId()));
+            if (message.attackTargetId() == null) {
+                explicitAllianceMessages++;
+            }
         }
+        assertTrue(explicitAllianceMessages >= 1);
 
         Optional<GameMemoryService.NegotiationCommitment> commitment = gameMemoryService.findCommitment(55L, 4);
         assertTrue(commitment.isPresent());
-        assertEquals(allyIds, commitment.get().alliedPlayerIds());
+        assertEquals(recipientIds, commitment.get().messagedPlayerIds());
+        assertEquals(explicitAllianceMessages, commitment.get().explicitAlliedPlayerIds().size());
         assertNotNull(commitment.get().focusTargetId());
     }
 }

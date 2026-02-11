@@ -60,9 +60,10 @@ This document describes the game API for the `Negotiation` and `Combat` phases, 
 ### Response Rules
 
 - Return an empty array (`[]`) if you do not want to send any diplomacy message.
-- `allyId`: Player you declare peace with (you will not attack this player).
+- `allyId`: Player you send the diplomacy message to.
 - `attackTargetId` (optional): Player you plan to attack.
-- A diplomacy message is sent only to the specified ally.
+- If `attackTargetId` is omitted, it means you are offering pure alliance/peace to `allyId`.
+- A diplomacy message is sent only to the specified `allyId`.
 - Multiple messages to the same `allyId` are not allowed.
 
 ## Combat Phase

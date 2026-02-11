@@ -67,7 +67,7 @@ public class ThreatAssessmentService {
             if (diplomacy.action().attackTargetId() != null && diplomacy.action().attackTargetId() == selfId) {
                 threatByEnemy.merge(enemyId, 20, Integer::sum);
             }
-            if (diplomacy.action().allyId() == selfId) {
+            if (diplomacy.action().allyId() == selfId && diplomacy.action().attackTargetId() == null) {
                 threatByEnemy.merge(enemyId, -12, Integer::sum);
             }
         }

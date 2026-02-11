@@ -9,8 +9,10 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class NegotiationStrategyService {
@@ -60,12 +62,23 @@ public class NegotiationStrategyService {
 
         int messageLimit = chooseMessageLimit(hostilityByEnemy, enemies.size());
         List<NegotiationMessage> messages = new ArrayList<>();
+        Set<Integer> usedRecipients = new HashSet<>();
+
+        if (messageLimit > 0 && !allianceCandidates.isEmpty()) {
+            EnemyTowerState explicitAllianceCandidate = allianceCandidates.getFirst();
+            messages.add(new NegotiationMessage(explicitAllianceCandidate.playerId(), null));
+            usedRecipients.add(explicitAllianceCandidate.playerId());
+        }
 
         for (EnemyTowerState allyCandidate : allianceCandidates) {
             if (messages.size() >= messageLimit) {
                 break;
             }
+            if (usedRecipients.contains(allyCandidate.playerId())) {
+                continue;
+            }
             messages.add(new NegotiationMessage(allyCandidate.playerId(), primaryTarget.playerId()));
+            usedRecipients.add(allyCandidate.playerId());
         }
 
         gameMemoryService.storeNegotiationPlan(request.gameId(), request.turn(), messages);

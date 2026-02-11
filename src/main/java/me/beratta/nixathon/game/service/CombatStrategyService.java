@@ -282,7 +282,7 @@ public class CombatStrategyService {
             if (commitment.focusTargetId() != null && enemy.playerId() == commitment.focusTargetId()) {
                 score += 20;
             }
-            if (commitment.alliedPlayerIds().contains(enemy.playerId())) {
+            if (commitment.explicitAlliedPlayerIds().contains(enemy.playerId())) {
                 score -= 30;
             }
         }
@@ -305,7 +305,7 @@ public class CombatStrategyService {
             return attacks;
         }
 
-        Set<Integer> negotiatedAllies = commitment == null ? Set.of() : commitment.alliedPlayerIds();
+        Set<Integer> negotiatedAllies = commitment == null ? Set.of() : commitment.explicitAlliedPlayerIds();
         int remainingBudget = attackBudget;
 
         for (EnemyTowerState target : rankedTargets) {

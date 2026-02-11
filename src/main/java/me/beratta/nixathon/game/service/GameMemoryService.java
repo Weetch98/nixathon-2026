@@ -20,7 +20,12 @@ public class GameMemoryService {
     private final Map<Long, NegotiationCommitment> commitmentsByGameId = new ConcurrentHashMap<>();
 
     public void storeNegotiationPlan(long gameId, int turn, List<NegotiationMessage> messages) {
-        Set<Integer> allies = messages.stream()
+        Set<Integer> messageRecipients = messages.stream()
+                .map(NegotiationMessage::allyId)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+
+        Set<Integer> explicitAllies = messages.stream()
+                .filter(message -> message.attackTargetId() == null)
                 .map(NegotiationMessage::allyId)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
@@ -35,12 +40,13 @@ public class GameMemoryService {
                 .map(Map.Entry::getKey)
                 .orElse(null);
 
-        commitmentsByGameId.put(gameId, new NegotiationCommitment(turn, allies, focusTarget));
+        commitmentsByGameId.put(gameId, new NegotiationCommitment(turn, messageRecipients, explicitAllies, focusTarget));
         log.debug(
-                "Stored negotiation commitment game={} turn={} allies={} focusTarget={}",
+                "Stored negotiation commitment game={} turn={} recipients={} explicitAllies={} focusTarget={}",
                 gameId,
                 turn,
-                allies,
+                messageRecipients,
+                explicitAllies,
                 focusTarget
         );
     }
@@ -52,10 +58,11 @@ public class GameMemoryService {
             return Optional.empty();
         }
         log.debug(
-                "Negotiation commitment found for game={} turn={} allies={} focusTarget={}",
+                "Negotiation commitment found for game={} turn={} recipients={} explicitAllies={} focusTarget={}",
                 gameId,
                 turn,
-                commitment.alliedPlayerIds(),
+                commitment.messagedPlayerIds(),
+                commitment.explicitAlliedPlayerIds(),
                 commitment.focusTargetId()
         );
         return Optional.of(commitment);
@@ -63,7 +70,8 @@ public class GameMemoryService {
 
     public record NegotiationCommitment(
             int turn,
-            Set<Integer> alliedPlayerIds,
+            Set<Integer> messagedPlayerIds,
+            Set<Integer> explicitAlliedPlayerIds,
             Integer focusTargetId
     ) {
     }
