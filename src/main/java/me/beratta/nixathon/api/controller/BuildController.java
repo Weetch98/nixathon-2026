@@ -20,9 +20,9 @@ public class BuildController {
 
     @GetMapping("/build")
     public BuildResponse getBuild() {
-        String buildNumber = buildInfoService.getBuildNumber();
+        String env = buildInfoService.getBuildNumber();
         String commitNumber = buildInfoService.getCommitNumber();
-        log.debug("Build endpoint requested build={} commit={}", buildNumber, commitNumber);
-        return new BuildResponse(buildNumber, commitNumber);
+        log.debug("Build endpoint requested env={} commit={}", env, commitNumber);
+        return new BuildResponse(env, commitNumber);
     }
 }
