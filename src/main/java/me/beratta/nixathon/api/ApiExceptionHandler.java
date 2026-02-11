@@ -26,6 +26,8 @@ public class ApiExceptionHandler {
                 .reduce((left, right) -> left + "; " + right)
                 .orElse("Invalid request body");
 
+        log.warn("Validation error on path={} message={}", request.getRequestURI(), message);
+        log.debug("Validation exception details", exception);
         return buildErrorResponse(HttpStatus.BAD_REQUEST, message, request.getRequestURI());
     }
 
@@ -34,6 +36,8 @@ public class ApiExceptionHandler {
             IllegalArgumentException exception,
             HttpServletRequest request
     ) {
+        log.warn("Illegal argument on path={} message={}", request.getRequestURI(), exception.getMessage());
+        log.debug("Illegal argument details", exception);
         return buildErrorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request.getRequestURI());
     }
 

@@ -1,6 +1,8 @@
 package me.beratta.nixathon.game.service;
 
 import me.beratta.nixathon.game.dto.NegotiationMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
@@ -12,6 +14,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class GameMemoryService {
+
+    private static final Logger log = LoggerFactory.getLogger(GameMemoryService.class);
 
     private final Map<Long, NegotiationCommitment> commitmentsByGameId = new ConcurrentHashMap<>();
 
@@ -32,13 +36,28 @@ public class GameMemoryService {
                 .orElse(null);
 
         commitmentsByGameId.put(gameId, new NegotiationCommitment(turn, allies, focusTarget));
+        log.debug(
+                "Stored negotiation commitment game={} turn={} allies={} focusTarget={}",
+                gameId,
+                turn,
+                allies,
+                focusTarget
+        );
     }
 
     public Optional<NegotiationCommitment> findCommitment(long gameId, int turn) {
         NegotiationCommitment commitment = commitmentsByGameId.get(gameId);
         if (commitment == null || commitment.turn() != turn) {
+            log.debug("No negotiation commitment found for game={} turn={}", gameId, turn);
             return Optional.empty();
         }
+        log.debug(
+                "Negotiation commitment found for game={} turn={} allies={} focusTarget={}",
+                gameId,
+                turn,
+                commitment.alliedPlayerIds(),
+                commitment.focusTargetId()
+        );
         return Optional.of(commitment);
     }
 

@@ -5,6 +5,8 @@ import me.beratta.nixathon.game.dto.CombatRequest;
 import me.beratta.nixathon.game.dto.EnemyTowerState;
 import me.beratta.nixathon.game.dto.PlayerDiplomacy;
 import me.beratta.nixathon.game.dto.TowerState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -18,6 +20,8 @@ import java.util.Set;
 
 @Service
 public class CombatStrategyService {
+
+    private static final Logger log = LoggerFactory.getLogger(CombatStrategyService.class);
 
     private static final int MAX_TURNS = 25;
 
@@ -36,6 +40,7 @@ public class CombatStrategyService {
     }
 
     public List<CombatActionResponse> planCombat(CombatRequest request) {
+        long startNanos = System.nanoTime();
         List<EnemyTowerState> aliveEnemies = request.enemyTowers().stream()
                 .filter(enemy -> enemy.hp() > 0)
                 .toList();
@@ -43,6 +48,14 @@ public class CombatStrategyService {
         TowerState playerTower = request.playerTower();
         int totalResources = playerTower.resources();
         if (aliveEnemies.isEmpty() || totalResources <= 0) {
+            log.info(
+                    "Combat planning skipped game={} turn={} reason={} aliveEnemies={} resources={}",
+                    request.gameId(),
+                    request.turn(),
+                    aliveEnemies.isEmpty() ? "no_alive_enemies" : "no_resources",
+                    aliveEnemies.size(),
+                    totalResources
+            );
             return List.of();
         }
 
@@ -102,7 +115,32 @@ public class CombatStrategyService {
             proposedActions.add(CombatActionResponse.upgrade());
         }
 
-        return sanitizeActions(proposedActions, totalResources, upgradeCost);
+        List<CombatActionResponse> sanitizedActions = sanitizeActions(proposedActions, totalResources, upgradeCost);
+        long durationMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+        log.info(
+                "Combat planned game={} turn={} expectedIncomingDamage={} armorSpend={} shouldUpgrade={} proposedActions={} finalActions={} durationMs={}",
+                request.gameId(),
+                request.turn(),
+                expectedIncomingDamage,
+                armorSpend,
+                shouldUpgrade,
+                proposedActions.size(),
+                sanitizedActions.size(),
+                durationMs
+        );
+        log.debug(
+                "Combat planning details game={} turn={} threatByEnemy={} commitment={} rankedTargets={} attacks={} actions={}",
+                request.gameId(),
+                request.turn(),
+                threatByEnemy,
+                commitment,
+                rankedTargets.stream().map(EnemyTowerState::playerId).toList(),
+                attacks,
+                sanitizedActions
+        );
+
+        return sanitizedActions;
     }
 
     private int estimateIncomingDamage(
@@ -367,9 +405,15 @@ public class CombatStrategyService {
         for (CombatActionResponse action : proposedActions) {
             if ("armor".equals(action.type())) {
                 if (armorUsed || action.amount() == null || action.amount() <= 0) {
+                    log.warn("Dropping invalid armor action action={}", action);
                     continue;
                 }
                 if (action.amount() > remainingResources) {
+                    log.warn(
+                            "Dropping armor action because of insufficient resources amount={} remainingResources={}",
+                            action.amount(),
+                            remainingResources
+                    );
                     continue;
                 }
                 sanitized.add(CombatActionResponse.armor(action.amount()));
@@ -380,12 +424,20 @@ public class CombatStrategyService {
 
             if ("attack".equals(action.type())) {
                 if (action.targetId() == null || action.troopCount() == null || action.troopCount() <= 0) {
+                    log.warn("Dropping invalid attack action action={}", action);
                     continue;
                 }
                 if (attackedTargets.contains(action.targetId())) {
+                    log.warn("Dropping duplicate attack target action={}", action);
                     continue;
                 }
                 if (action.troopCount() > remainingResources) {
+                    log.warn(
+                            "Dropping attack action because of insufficient resources target={} troops={} remainingResources={}",
+                            action.targetId(),
+                            action.troopCount(),
+                            remainingResources
+                    );
                     continue;
                 }
                 sanitized.add(CombatActionResponse.attack(action.targetId(), action.troopCount()));
@@ -396,12 +448,31 @@ public class CombatStrategyService {
 
             if ("upgrade".equals(action.type())) {
                 if (upgradeUsed || upgradeCost > remainingResources) {
+                    log.warn(
+                            "Dropping upgrade action because alreadyUsed={} or insufficientResources={} upgradeCost={} remainingResources={}",
+                            upgradeUsed,
+                            upgradeCost > remainingResources,
+                            upgradeCost,
+                            remainingResources
+                    );
                     continue;
                 }
                 sanitized.add(CombatActionResponse.upgrade());
                 remainingResources -= upgradeCost;
                 upgradeUsed = true;
+                continue;
             }
+
+            log.warn("Dropping unknown combat action type action={}", action);
+        }
+
+        if (sanitized.size() != proposedActions.size()) {
+            log.warn(
+                    "Combat action sanitization removed actions proposed={} sanitized={} remainingResources={}",
+                    proposedActions.size(),
+                    sanitized.size(),
+                    remainingResources
+            );
         }
 
         return List.copyOf(sanitized);

@@ -3,6 +3,8 @@ package me.beratta.nixathon.game.service;
 import me.beratta.nixathon.game.dto.EnemyTowerState;
 import me.beratta.nixathon.game.dto.NegotiationMessage;
 import me.beratta.nixathon.game.dto.NegotiationRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -12,6 +14,8 @@ import java.util.Map;
 
 @Service
 public class NegotiationStrategyService {
+
+    private static final Logger log = LoggerFactory.getLogger(NegotiationStrategyService.class);
 
     private final ThreatAssessmentService threatAssessmentService;
     private final GameMemoryService gameMemoryService;
@@ -25,12 +29,28 @@ public class NegotiationStrategyService {
     }
 
     public List<NegotiationMessage> planNegotiation(NegotiationRequest request) {
+        log.debug(
+                "Planning negotiation game={} turn={} self={} resources={} enemies={} observedActions={}",
+                request.gameId(),
+                request.turn(),
+                request.playerTower().playerId(),
+                request.playerTower().resources(),
+                request.enemyTowers().size(),
+                request.combatActions().size()
+        );
+
         List<EnemyTowerState> enemies = request.enemyTowers().stream()
                 .filter(enemy -> enemy.hp() > 0)
                 .toList();
 
         if (enemies.size() <= 1) {
             gameMemoryService.storeNegotiationPlan(request.gameId(), request.turn(), List.of());
+            log.info(
+                    "Negotiation skipped game={} turn={} reason=insufficient_alive_enemies aliveEnemies={}",
+                    request.gameId(),
+                    request.turn(),
+                    enemies.size()
+            );
             return List.of();
         }
 
@@ -49,6 +69,14 @@ public class NegotiationStrategyService {
         }
 
         gameMemoryService.storeNegotiationPlan(request.gameId(), request.turn(), messages);
+        log.info(
+                "Negotiation planned game={} turn={} primaryTarget={} allyMessages={} hostilityMap={}",
+                request.gameId(),
+                request.turn(),
+                primaryTarget.playerId(),
+                messages.size(),
+                hostilityByEnemy
+        );
         return List.copyOf(messages);
     }
 

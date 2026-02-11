@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 public class CombatController {
@@ -25,7 +26,33 @@ public class CombatController {
 
     @PostMapping("/combat")
     public List<CombatActionResponse> combat(@Valid @RequestBody CombatRequest request) {
-        log.debug("Combat request received for game={}, turn={}", request.gameId(), request.turn());
-        return combatStrategyService.planCombat(request);
+        long startNanos = System.nanoTime();
+        log.info(
+                "Combat request received game={} turn={} player={} hp={} armor={} resources={} level={} enemyCount={} diplomacyCount={} previousAttackCount={}",
+                request.gameId(),
+                request.turn(),
+                request.playerTower().playerId(),
+                request.playerTower().hp(),
+                request.playerTower().armor(),
+                request.playerTower().resources(),
+                request.playerTower().level(),
+                request.enemyTowers().size(),
+                request.diplomacy().size(),
+                request.previousAttacks().size()
+        );
+
+        List<CombatActionResponse> response = combatStrategyService.planCombat(request);
+        long durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+        log.info(
+                "Combat response prepared game={} turn={} actions={} durationMs={}",
+                request.gameId(),
+                request.turn(),
+                response.size(),
+                durationMs
+        );
+        log.debug("Combat response details game={} turn={} actions={}", request.gameId(), request.turn(), response);
+
+        return response;
     }
 }

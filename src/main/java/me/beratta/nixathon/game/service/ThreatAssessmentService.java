@@ -5,6 +5,8 @@ import me.beratta.nixathon.game.dto.EnemyTowerState;
 import me.beratta.nixathon.game.dto.NegotiationRequest;
 import me.beratta.nixathon.game.dto.PlayerAttack;
 import me.beratta.nixathon.game.dto.PlayerDiplomacy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
@@ -12,6 +14,8 @@ import java.util.Map;
 
 @Service
 public class ThreatAssessmentService {
+
+    private static final Logger log = LoggerFactory.getLogger(ThreatAssessmentService.class);
 
     public Map<Integer, Integer> assessNegotiationThreat(NegotiationRequest request) {
         int selfId = request.playerTower().playerId();
@@ -29,7 +33,16 @@ public class ThreatAssessmentService {
             }
         }
 
-        return clampThreats(threatByEnemy);
+        Map<Integer, Integer> clampedThreats = clampThreats(threatByEnemy);
+        log.debug(
+                "Negotiation threat assessed game={} turn={} self={} enemyCount={} threats={}",
+                request.gameId(),
+                request.turn(),
+                selfId,
+                request.enemyTowers().size(),
+                clampedThreats
+        );
+        return clampedThreats;
     }
 
     public Map<Integer, Integer> assessCombatThreat(CombatRequest request) {
@@ -59,7 +72,16 @@ public class ThreatAssessmentService {
             }
         }
 
-        return clampThreats(threatByEnemy);
+        Map<Integer, Integer> clampedThreats = clampThreats(threatByEnemy);
+        log.debug(
+                "Combat threat assessed game={} turn={} self={} enemyCount={} threats={}",
+                request.gameId(),
+                request.turn(),
+                selfId,
+                request.enemyTowers().size(),
+                clampedThreats
+        );
+        return clampedThreats;
     }
 
     private Map<Integer, Integer> initializeEnemyThreatMap(Iterable<EnemyTowerState> enemies) {

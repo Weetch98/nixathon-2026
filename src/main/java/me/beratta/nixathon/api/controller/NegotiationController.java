@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 public class NegotiationController {
@@ -25,7 +26,32 @@ public class NegotiationController {
 
     @PostMapping("/negotiate")
     public List<NegotiationMessage> negotiate(@Valid @RequestBody NegotiationRequest request) {
-        log.debug("Negotiation request received for game={}, turn={}", request.gameId(), request.turn());
-        return negotiationStrategyService.planNegotiation(request);
+        long startNanos = System.nanoTime();
+        log.info(
+                "Negotiation request received game={} turn={} player={} hp={} armor={} resources={} level={} enemyCount={} observedCombatActions={}",
+                request.gameId(),
+                request.turn(),
+                request.playerTower().playerId(),
+                request.playerTower().hp(),
+                request.playerTower().armor(),
+                request.playerTower().resources(),
+                request.playerTower().level(),
+                request.enemyTowers().size(),
+                request.combatActions().size()
+        );
+
+        List<NegotiationMessage> response = negotiationStrategyService.planNegotiation(request);
+        long durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+        log.info(
+                "Negotiation response prepared game={} turn={} messagesSent={} durationMs={}",
+                request.gameId(),
+                request.turn(),
+                response.size(),
+                durationMs
+        );
+        log.debug("Negotiation response details game={} turn={} messages={}", request.gameId(), request.turn(), response);
+
+        return response;
     }
 }

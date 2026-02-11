@@ -19,6 +19,15 @@ The app starts on `http://localhost:8080` by default.
 ./mvnw clean package
 ```
 
+## Logging
+
+- Every request is logged with start/end entries, status code, and duration.
+- Correlation IDs are supported via `X-Request-Id`; if missing, one is generated and returned in the response header.
+- Logs include `req=<requestId>` through MDC in the console pattern.
+- Default levels are configured in `src/main/resources/application.properties`:
+  - `logging.level.root=INFO`
+  - `logging.level.me.beratta.nixathon=DEBUG`
+
 ## Deploy to VPS (Remote Docker Context over SSH)
 
 This is the direct workflow: your local machine triggers deploys on the VPS Docker daemon over SSH.
