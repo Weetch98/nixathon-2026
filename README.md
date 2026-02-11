@@ -89,6 +89,22 @@ You can also deploy with:
 }
 ```
 
+### Build info
+
+- Method: `GET`
+- Path: `/build`
+- Response:
+
+```json
+{
+  "build": "dev-local"
+}
+```
+
+Build number is read from `build.properties` via key `build.number`.
+Default file: `src/main/resources/build.properties`.
+Optional override at runtime: `./build.properties` next to the jar/container working directory.
+
 ### Negotiation turn
 
 - Method: `POST`
