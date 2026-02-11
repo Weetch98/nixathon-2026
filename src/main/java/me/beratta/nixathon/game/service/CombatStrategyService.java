@@ -31,6 +31,7 @@ public class CombatStrategyService {
     private static final Logger log = LoggerFactory.getLogger(CombatStrategyService.class);
 
     private static final int MAX_TURNS = 25;
+    private static final int FOUR_PLAYER_ENEMY_COUNT = 3;
 
     private final ThreatAssessmentService threatAssessmentService;
     private final EconomyService economyService;
@@ -113,6 +114,7 @@ public class CombatStrategyService {
         int resourcesAfterUpgrade = shouldUpgrade ? totalResources - upgradeCost : totalResources;
         List<EnemyTowerState> rankedTargets = rankTargets(
                 request.turn(),
+                request.playerTower().level(),
                 aliveEnemies,
                 threatByEnemy,
                 profilesByEnemy,
@@ -249,6 +251,7 @@ public class CombatStrategyService {
             DiplomacySignals diplomacySignals
     ) {
         int selfId = request.playerTower().playerId();
+        int selfLevel = request.playerTower().level();
         Map<Integer, Integer> lastTurnTroopsToUsByEnemy = new HashMap<>();
         for (PlayerAttack attack : request.previousAttacks()) {
             if (attack.action().targetId() == selfId) {
@@ -271,6 +274,14 @@ public class CombatStrategyService {
 
             if (profile != null && profile.consecutiveAttackTurns() >= 2) {
                 predictedTroops += 4;
+            }
+            if (profile != null && profile.likelyAfkCollector()) {
+                predictedTroops += 5 + (enemy.level() * 2);
+            }
+            if (profile != null
+                    && profile.consecutiveNoAttackTurns() >= 2
+                    && enemy.level() >= (selfLevel + 2)) {
+                predictedTroops += 6;
             }
             if (diplomacySignals.explicitThreatEnemies().contains(enemyId)) {
                 predictedTroops += 6;
@@ -388,6 +399,18 @@ public class CombatStrategyService {
         )) {
             return true;
         }
+        if (shouldTakeEconomicUpgrade(
+                request,
+                aliveEnemies,
+                posture,
+                fatigue,
+                totalResources,
+                baselineArmorSpend,
+                expectedIncomingDamage,
+                upgradeCost
+        )) {
+            return true;
+        }
 
         if (upgradeCost > totalResources) {
             return false;
@@ -398,7 +421,7 @@ public class CombatStrategyService {
         if (fatigue.active() || fatigue.turnsUntilStart() <= 3) {
             return false;
         }
-        if (request.turn() > 9 || aliveEnemies.size() < 3) {
+        if (request.turn() > 12 || aliveEnemies.size() < 3) {
             return false;
         }
         if (expectedIncomingDamage >= (request.playerTower().hp() / 2)) {
@@ -413,6 +436,64 @@ public class CombatStrategyService {
         int turnsRemaining = Math.max(0, MAX_TURNS - request.turn());
         int projectedUpgradeReturn = economyService.estimatedUpgradeReturn(request.playerTower().level(), turnsRemaining);
         return projectedUpgradeReturn >= (int) Math.round(upgradeCost * 0.60);
+    }
+
+    /**
+     * 4-player anti-snowball upgrade policy.
+     * <p>
+     * When we are behind the level curve but still safe, prioritize catching up economically
+     * so one upgrader cannot dominate the mid game with one large troop spike.
+     */
+    private boolean shouldTakeEconomicUpgrade(
+            CombatRequest request,
+            List<EnemyTowerState> aliveEnemies,
+            CombatPosture posture,
+            FatigueService.FatigueForecast fatigue,
+            int totalResources,
+            int baselineArmorSpend,
+            int expectedIncomingDamage,
+            int upgradeCost
+    ) {
+        if (aliveEnemies.size() < FOUR_PLAYER_ENEMY_COUNT) {
+            return false;
+        }
+        if (upgradeCost > totalResources) {
+            return false;
+        }
+        if (posture == CombatPosture.SURVIVAL || posture == CombatPosture.CLOSER) {
+            return false;
+        }
+        if (fatigue.active() || fatigue.turnsUntilStart() <= 4) {
+            return false;
+        }
+        if (request.turn() > 14) {
+            return false;
+        }
+        if (expectedIncomingDamage >= (int) Math.round(request.playerTower().hp() * 0.45)) {
+            return false;
+        }
+
+        int currentLevel = request.playerTower().level();
+        int maxEnemyLevel = aliveEnemies.stream()
+                .mapToInt(EnemyTowerState::level)
+                .max()
+                .orElse(currentLevel);
+        boolean behindCurve = maxEnemyLevel >= (currentLevel + 1);
+        boolean farBehindCurve = maxEnemyLevel >= (currentLevel + 2);
+        if (!behindCurve) {
+            return false;
+        }
+
+        int resourcesAfterUpgrade = totalResources - upgradeCost;
+        int reserveFloor = baselineArmorSpend + (farBehindCurve ? 16 : 20);
+        if (resourcesAfterUpgrade < reserveFloor) {
+            return false;
+        }
+
+        int turnsRemaining = Math.max(0, MAX_TURNS - request.turn());
+        int projectedUpgradeReturn = economyService.estimatedUpgradeReturn(currentLevel, turnsRemaining);
+        double roiFloor = farBehindCurve ? 0.35 : 0.45;
+        return projectedUpgradeReturn >= (int) Math.round(upgradeCost * roiFloor);
     }
 
     /**
@@ -499,6 +580,7 @@ public class CombatStrategyService {
      */
     private List<EnemyTowerState> rankTargets(
             int turn,
+            int playerLevel,
             List<EnemyTowerState> enemies,
             Map<Integer, Integer> threatByEnemy,
             Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
@@ -508,10 +590,17 @@ public class CombatStrategyService {
             FatigueService.FatigueForecast fatigue,
             int availableAttackBudget
     ) {
+        int maxEnemyLevel = enemies.stream()
+                .mapToInt(EnemyTowerState::level)
+                .max()
+                .orElse(playerLevel);
         return enemies.stream()
                 .sorted(Comparator.comparingDouble(
                         (EnemyTowerState enemy) -> targetPriority(
                                 turn,
+                                playerLevel,
+                                enemies.size(),
+                                maxEnemyLevel,
                                 enemy,
                                 threatByEnemy,
                                 profilesByEnemy,
@@ -531,6 +620,9 @@ public class CombatStrategyService {
      */
     private double targetPriority(
             int turn,
+            int playerLevel,
+            int aliveEnemyCount,
+            int maxEnemyLevel,
             EnemyTowerState enemy,
             Map<Integer, Integer> threatByEnemy,
             Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
@@ -544,6 +636,7 @@ public class CombatStrategyService {
         int durability = enemy.effectiveDurability();
         int threat = threatByEnemy.getOrDefault(enemy.playerId(), 0);
         double score = (threat * 2.0) + (enemy.level() * 7.0) + (170.0 - durability);
+        int levelLeadOverUs = enemy.level() - playerLevel;
 
         score += diplomacySignals.focusBoostByTarget().getOrDefault(enemy.playerId(), 0) * 1.2;
         if (diplomacySignals.peaceOfferingEnemies().contains(enemy.playerId())) {
@@ -560,11 +653,23 @@ public class CombatStrategyService {
             if (profile.likelyAfkCollector()) {
                 score += turn >= 8 ? 12 : 6;
             }
+            if (profile.consecutiveNoAttackTurns() >= 3 && enemy.level() >= 2) {
+                score += 8;
+            }
             if (profile.trustScore() > 20 && profile.betrayalsAgainstUs() == 0 && posture == CombatPosture.BALANCED) {
                 score -= 10;
             }
             if (profile.trustScore() < 0) {
                 score += 4;
+            }
+        }
+
+        if (aliveEnemyCount >= FOUR_PLAYER_ENEMY_COUNT) {
+            if (enemy.level() == maxEnemyLevel && enemy.level() >= (playerLevel + 1)) {
+                score += 14;
+            }
+            if (levelLeadOverUs >= 2) {
+                score += 18;
             }
         }
 
@@ -657,14 +762,38 @@ public class CombatStrategyService {
         if (remainingBudget > 0) {
             EnemyTowerState focusTarget = chooseFocusTarget(rankedTargets, attacks.keySet(), commitment);
             if (focusTarget != null) {
-                int pressureTroops = remainingBudget;
-                if (posture == CombatPosture.SURVIVAL && securedEliminations == 0) {
-                    // Keep some resources uncommitted in emergency posture unless necessary.
-                    pressureTroops = Math.max(8, remainingBudget / 2);
-                    pressureTroops = Math.min(pressureTroops, remainingBudget);
+                boolean canSplitPressure = rankedTargets.size() >= FOUR_PLAYER_ENEMY_COUNT
+                        && posture != CombatPosture.SURVIVAL
+                        && remainingBudget >= 16;
+                if (canSplitPressure) {
+                    EnemyTowerState secondaryTarget = chooseSecondaryFocusTarget(
+                            rankedTargets,
+                            attacks.keySet(),
+                            focusTarget.playerId()
+                    );
+                    if (secondaryTarget != null) {
+                        int primaryPressure = (int) Math.floor(remainingBudget * 0.62);
+                        primaryPressure = Math.max(8, primaryPressure);
+                        primaryPressure = Math.min(primaryPressure, remainingBudget - 6);
+
+                        attacks.merge(focusTarget.playerId(), primaryPressure, Integer::sum);
+                        remainingBudget -= primaryPressure;
+
+                        attacks.merge(secondaryTarget.playerId(), remainingBudget, Integer::sum);
+                        remainingBudget = 0;
+                    }
                 }
-                attacks.merge(focusTarget.playerId(), pressureTroops, Integer::sum);
-                remainingBudget -= pressureTroops;
+
+                if (remainingBudget > 0) {
+                    int pressureTroops = remainingBudget;
+                    if (posture == CombatPosture.SURVIVAL && securedEliminations == 0) {
+                        // Keep some resources uncommitted in emergency posture unless necessary.
+                        pressureTroops = Math.max(8, remainingBudget / 2);
+                        pressureTroops = Math.min(pressureTroops, remainingBudget);
+                    }
+                    attacks.merge(focusTarget.playerId(), pressureTroops, Integer::sum);
+                    remainingBudget -= pressureTroops;
+                }
             }
         }
 
@@ -715,6 +844,9 @@ public class CombatStrategyService {
         if (profile != null && (profile.betrayalsAgainstUs() > 0 || profile.likelyAfkCollector())) {
             return true;
         }
+        if (rankedTargetCount >= FOUR_PLAYER_ENEMY_COUNT && target.level() >= 3) {
+            return adjustedKillCost <= Math.max(26, (attackBudget * 2) / 3);
+        }
         if (posture == CombatPosture.CLOSER || posture == CombatPosture.AGGRESSIVE) {
             return adjustedKillCost <= Math.max(22, attackBudget / 2);
         }
@@ -743,6 +875,25 @@ public class CombatStrategyService {
             }
         }
         return rankedTargets.isEmpty() ? null : rankedTargets.getFirst();
+    }
+
+    /**
+     * Picks a secondary pressure target in multi-opponent states to avoid tunnel vision.
+     */
+    private EnemyTowerState chooseSecondaryFocusTarget(
+            List<EnemyTowerState> rankedTargets,
+            Set<Integer> alreadyAttackedTargets,
+            int primaryTargetId
+    ) {
+        for (EnemyTowerState target : rankedTargets) {
+            if (target.playerId() == primaryTargetId) {
+                continue;
+            }
+            if (!alreadyAttackedTargets.contains(target.playerId())) {
+                return target;
+            }
+        }
+        return null;
     }
 
     /**

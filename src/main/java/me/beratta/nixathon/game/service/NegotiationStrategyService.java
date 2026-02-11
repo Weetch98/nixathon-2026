@@ -25,6 +25,7 @@ import java.util.Set;
 public class NegotiationStrategyService {
 
     private static final Logger log = LoggerFactory.getLogger(NegotiationStrategyService.class);
+    private static final int FOUR_PLAYER_ENEMY_COUNT = 3;
 
     private final ThreatAssessmentService threatAssessmentService;
     private final GameMemoryService gameMemoryService;
@@ -71,15 +72,34 @@ public class NegotiationStrategyService {
         Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy = gameMemoryService
                 .getPlayerProfiles(request.gameId(), enemies);
         Map<Integer, Integer> hostilityByEnemy = threatAssessmentService.assessNegotiationThreat(request, profilesByEnemy);
-        EnemyTowerState primaryTarget = pickPrimaryTarget(enemies, hostilityByEnemy, profilesByEnemy, request.turn());
+        int maxEnemyLevel = enemies.stream()
+                .mapToInt(EnemyTowerState::level)
+                .max()
+                .orElse(request.playerTower().level());
+        EnemyTowerState primaryTarget = pickPrimaryTarget(
+                enemies,
+                hostilityByEnemy,
+                profilesByEnemy,
+                request.turn(),
+                request.playerTower().level(),
+                maxEnemyLevel
+        );
         List<EnemyTowerState> allianceCandidates = rankAllianceCandidates(
                 enemies,
                 hostilityByEnemy,
                 profilesByEnemy,
-                primaryTarget.playerId()
+                primaryTarget.playerId(),
+                maxEnemyLevel
         );
 
-        int messageLimit = chooseMessageLimit(hostilityByEnemy, enemies.size(), request.turn());
+        int messageLimit = chooseMessageLimit(
+                hostilityByEnemy,
+                enemies,
+                profilesByEnemy,
+                primaryTarget,
+                request.turn(),
+                maxEnemyLevel
+        );
         List<NegotiationMessage> messages = new ArrayList<>();
         Set<Integer> usedRecipients = new HashSet<>();
 
@@ -135,10 +155,22 @@ public class NegotiationStrategyService {
             List<EnemyTowerState> enemies,
             Map<Integer, Integer> hostilityByEnemy,
             Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
-            int turn
+            int turn,
+            int selfLevel,
+            int maxEnemyLevel
     ) {
         return enemies.stream()
-                .max(Comparator.comparingDouble(enemy -> targetPriority(enemy, hostilityByEnemy, profilesByEnemy, turn)))
+                .max(Comparator.comparingDouble(
+                        enemy -> targetPriority(
+                                enemy,
+                                hostilityByEnemy,
+                                profilesByEnemy,
+                                turn,
+                                selfLevel,
+                                maxEnemyLevel,
+                                enemies.size()
+                        )
+                ))
                 .orElseThrow();
     }
 
@@ -149,12 +181,18 @@ public class NegotiationStrategyService {
             List<EnemyTowerState> enemies,
             Map<Integer, Integer> hostilityByEnemy,
             Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
-            int excludedEnemyId
+            int excludedEnemyId,
+            int maxEnemyLevel
     ) {
         return enemies.stream()
                 .filter(enemy -> enemy.playerId() != excludedEnemyId)
                 .sorted(Comparator.comparingDouble(
-                                (EnemyTowerState enemy) -> allianceScore(enemy, hostilityByEnemy, profilesByEnemy)
+                                (EnemyTowerState enemy) -> allianceScore(
+                                        enemy,
+                                        hostilityByEnemy,
+                                        profilesByEnemy,
+                                        maxEnemyLevel
+                                )
                         )
                         .reversed())
                 .toList();
@@ -163,7 +201,15 @@ public class NegotiationStrategyService {
     /**
      * Limits diplomacy fanout to reduce noise in high-risk or late-game states.
      */
-    private int chooseMessageLimit(Map<Integer, Integer> hostilityByEnemy, int enemyCount, int turn) {
+    private int chooseMessageLimit(
+            Map<Integer, Integer> hostilityByEnemy,
+            List<EnemyTowerState> enemies,
+            Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
+            EnemyTowerState primaryTarget,
+            int turn,
+            int maxEnemyLevel
+    ) {
+        int enemyCount = enemies.size();
         if (enemyCount <= 2) {
             return 1;
         }
@@ -175,6 +221,11 @@ public class NegotiationStrategyService {
         int desiredMessageCount = 2;
         if (turn <= 6 && enemyCount >= 4) {
             desiredMessageCount = 3;
+        }
+        if (enemyCount >= FOUR_PLAYER_ENEMY_COUNT
+                && isEconomicLeader(primaryTarget, profilesByEnemy, maxEnemyLevel)
+                && turn <= 14) {
+            desiredMessageCount = Math.max(desiredMessageCount, 3);
         }
         if (maxThreat >= 55 || turn >= 16) {
             desiredMessageCount = Math.min(desiredMessageCount, 2);
@@ -236,17 +287,31 @@ public class NegotiationStrategyService {
             EnemyTowerState enemy,
             Map<Integer, Integer> hostilityByEnemy,
             Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
-            int turn
+            int turn,
+            int selfLevel,
+            int maxEnemyLevel,
+            int enemyCount
     ) {
         GameMemoryService.PlayerProfileSnapshot profile = profilesByEnemy.get(enemy.playerId());
         int hostility = hostilityByEnemy.getOrDefault(enemy.playerId(), 0);
         int durability = enemy.effectiveDurability();
+        int levelLeadOverUs = enemy.level() - selfLevel;
 
         double score = (hostility * 2.1) + (enemy.level() * 8.0) + (170.0 - durability);
         if (profile != null) {
             score += profile.hostilityScore() * 0.6;
             score += profile.afkHoardingRisk() * 1.2;
             score += profile.betrayalsAgainstUs() * 12.0;
+            if (profile.consecutiveNoAttackTurns() >= 2 && enemy.level() >= 2) {
+                score += 6;
+            }
+        }
+        if (enemyCount >= FOUR_PLAYER_ENEMY_COUNT
+                && isEconomicLeader(enemy, profilesByEnemy, maxEnemyLevel)) {
+            score += 20;
+        }
+        if (enemyCount >= FOUR_PLAYER_ENEMY_COUNT && levelLeadOverUs >= 2) {
+            score += 16;
         }
         if (turn >= 18) {
             // Late game: emphasize high-level survivors to avoid resource snowball losses.
@@ -261,20 +326,46 @@ public class NegotiationStrategyService {
     private double allianceScore(
             EnemyTowerState enemy,
             Map<Integer, Integer> hostilityByEnemy,
-            Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy
+            Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
+            int maxEnemyLevel
     ) {
         GameMemoryService.PlayerProfileSnapshot profile = profilesByEnemy.get(enemy.playerId());
         int hostility = hostilityByEnemy.getOrDefault(enemy.playerId(), 0);
+        double economicLeaderPenalty = enemy.level() == maxEnemyLevel && maxEnemyLevel >= 2 ? 12.0 : 0.0;
         if (profile == null) {
-            return (enemy.level() * 2.0) - hostility;
+            return (enemy.level() * 2.0) - hostility - economicLeaderPenalty;
         }
 
         double trust = profile.trustScore();
         double betrayalPenalty = profile.betrayalsAgainstUs() * 15.0;
+        if (profile.likelyAfkCollector()) {
+            economicLeaderPenalty += 8.0;
+        }
         return (trust * 1.4)
                 - (hostility * 1.2)
                 - profile.afkHoardingRisk()
                 - betrayalPenalty
+                - economicLeaderPenalty
                 + (enemy.level() * 2.0);
+    }
+
+    /**
+     * Identifies level leaders that look like snowball threats in multi-player states.
+     */
+    private boolean isEconomicLeader(
+            EnemyTowerState enemy,
+            Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
+            int maxEnemyLevel
+    ) {
+        if (enemy.level() < maxEnemyLevel || maxEnemyLevel < 2) {
+            return false;
+        }
+        GameMemoryService.PlayerProfileSnapshot profile = profilesByEnemy.get(enemy.playerId());
+        if (profile == null) {
+            return true;
+        }
+        return profile.likelyAfkCollector()
+                || profile.consecutiveNoAttackTurns() >= 2
+                || profile.attacksAgainstUsCount() == 0;
     }
 }

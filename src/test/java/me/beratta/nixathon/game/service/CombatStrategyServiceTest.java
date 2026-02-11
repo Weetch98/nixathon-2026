@@ -139,6 +139,56 @@ class CombatStrategyServiceTest {
         assertTrue(attackOnSecondEnemy.troopCount() >= 17);
     }
 
+    @Test
+    void shouldUpgradeToKeepPaceAgainstLevelLeaderInFourPlayerState() {
+        GameMemoryService gameMemoryService = new GameMemoryService();
+        CombatStrategyService combatStrategyService = strategyService(gameMemoryService);
+
+        CombatRequest request = new CombatRequest(
+                101L,
+                10,
+                new TowerState(100, 100, 25, 70, 1),
+                List.of(
+                        new EnemyTowerState(200, 95, 12, 3),
+                        new EnemyTowerState(201, 95, 10, 2),
+                        new EnemyTowerState(202, 90, 8, 1)
+                ),
+                List.of(),
+                List.of()
+        );
+
+        List<CombatActionResponse> actions = combatStrategyService.planCombat(request);
+
+        assertTrue(actions.stream().anyMatch(action -> "upgrade".equals(action.type())));
+    }
+
+    @Test
+    void shouldPressureEconomicLeaderAndSplitPressureInFourPlayerState() {
+        GameMemoryService gameMemoryService = new GameMemoryService();
+        CombatStrategyService combatStrategyService = strategyService(gameMemoryService);
+
+        CombatRequest request = new CombatRequest(
+                102L,
+                7,
+                new TowerState(100, 100, 35, 28, 1),
+                List.of(
+                        new EnemyTowerState(200, 90, 10, 1),
+                        new EnemyTowerState(201, 95, 10, 1),
+                        new EnemyTowerState(300, 100, 12, 3)
+                ),
+                List.of(),
+                List.of()
+        );
+
+        List<CombatActionResponse> actions = combatStrategyService.planCombat(request);
+
+        List<CombatActionResponse> attackActions = actions.stream()
+                .filter(action -> "attack".equals(action.type()))
+                .toList();
+        assertTrue(attackActions.size() >= 2);
+        assertTrue(attackActions.stream().anyMatch(action -> action.targetId() != null && action.targetId() == 300));
+    }
+
     private CombatStrategyService strategyService(GameMemoryService gameMemoryService) {
         return new CombatStrategyService(
                 new ThreatAssessmentService(),

@@ -62,4 +62,35 @@ class NegotiationStrategyServiceTest {
         assertTrue(commitment.get().explicitAlliedPlayerIds().size() <= recipientIds.size());
         assertNotNull(commitment.get().focusTargetId());
     }
+
+    @Test
+    void shouldCoordinateAgainstEconomicLeaderInFourPlayerState() {
+        ThreatAssessmentService threatAssessmentService = new ThreatAssessmentService();
+        GameMemoryService gameMemoryService = new GameMemoryService();
+        NegotiationStrategyService negotiationStrategyService = new NegotiationStrategyService(
+                threatAssessmentService,
+                gameMemoryService
+        );
+
+        NegotiationRequest request = new NegotiationRequest(
+                66L,
+                6,
+                new TowerState(100, 100, 6, 52, 1),
+                List.of(
+                        new EnemyTowerState(200, 90, 10, 1),
+                        new EnemyTowerState(201, 92, 8, 1),
+                        new EnemyTowerState(300, 96, 14, 3)
+                ),
+                List.of()
+        );
+
+        List<NegotiationMessage> messages = negotiationStrategyService.planNegotiation(request);
+        assertFalse(messages.isEmpty());
+
+        List<NegotiationMessage> focusedMessages = messages.stream()
+                .filter(message -> message.attackTargetId() != null)
+                .toList();
+        assertFalse(focusedMessages.isEmpty());
+        assertTrue(focusedMessages.stream().allMatch(message -> message.attackTargetId() == 300));
+    }
 }
