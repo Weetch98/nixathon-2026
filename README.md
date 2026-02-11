@@ -89,20 +89,45 @@ You can also deploy with:
 }
 ```
 
-### Pick move
+### Negotiation turn
 
 - Method: `POST`
-- Path: `/api/game/move`
-- Purpose: receives game state and returns the move selected by your strategy
-- Current request body model: `MoveRequest` (placeholder, currently empty object: `{}`)
-- Current response body model: `MoveResponse` (placeholder, currently empty object: `{}`)
+- Path: `/negotiate`
+- Purpose: receives negotiation state and returns diplomacy messages.
 
 Example:
 
 ```bash
-curl -X POST http://localhost:8080/api/game/move \
+curl -X POST http://localhost:8080/negotiate \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{
+    "gameId": 1,
+    "turn": 1,
+    "playerTower": {"playerId": 10, "hp": 100, "armor": 0, "resources": 20, "level": 1},
+    "enemyTowers": [{"playerId": 11, "hp": 100, "armor": 0, "level": 1}],
+    "combatActions": []
+  }'
+```
+
+### Combat turn
+
+- Method: `POST`
+- Path: `/combat`
+- Purpose: receives combat state and returns armor/attack/upgrade actions.
+
+Example:
+
+```bash
+curl -X POST http://localhost:8080/combat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gameId": 1,
+    "turn": 1,
+    "playerTower": {"playerId": 10, "hp": 100, "armor": 0, "resources": 20, "level": 1},
+    "enemyTowers": [{"playerId": 11, "hp": 100, "armor": 0, "level": 1}],
+    "diplomacy": [],
+    "previousAttacks": []
+  }'
 ```
 
 ## Error format
@@ -115,6 +140,6 @@ Validation and runtime errors are returned in a consistent JSON format:
   "status": 400,
   "error": "Bad Request",
   "message": "Invalid request body",
-  "path": "/api/game/move"
+  "path": "/combat"
 }
 ```
