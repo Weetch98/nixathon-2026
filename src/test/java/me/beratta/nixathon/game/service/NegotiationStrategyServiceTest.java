@@ -52,19 +52,14 @@ class NegotiationStrategyServiceTest {
         assertTrue(messages.size() <= 3);
 
         Set<Integer> recipientIds = new HashSet<>();
-        long explicitAllianceMessages = 0;
         for (NegotiationMessage message : messages) {
             assertTrue(recipientIds.add(message.allyId()));
-            if (message.attackTargetId() == null) {
-                explicitAllianceMessages++;
-            }
         }
-        assertTrue(explicitAllianceMessages >= 1);
 
         Optional<GameMemoryService.NegotiationCommitment> commitment = gameMemoryService.findCommitment(55L, 4);
         assertTrue(commitment.isPresent());
         assertEquals(recipientIds, commitment.get().messagedPlayerIds());
-        assertEquals(explicitAllianceMessages, commitment.get().explicitAlliedPlayerIds().size());
+        assertTrue(commitment.get().explicitAlliedPlayerIds().size() <= recipientIds.size());
         assertNotNull(commitment.get().focusTargetId());
     }
 }

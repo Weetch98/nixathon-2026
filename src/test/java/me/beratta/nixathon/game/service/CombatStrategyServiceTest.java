@@ -27,10 +27,12 @@ class CombatStrategyServiceTest {
         ThreatAssessmentService threatAssessmentService = new ThreatAssessmentService();
         EconomyService economyService = new EconomyService();
         GameMemoryService gameMemoryService = new GameMemoryService();
+        FatigueService fatigueService = new FatigueService();
         CombatStrategyService combatStrategyService = new CombatStrategyService(
                 threatAssessmentService,
                 economyService,
-                gameMemoryService
+                gameMemoryService,
+                fatigueService
         );
 
         gameMemoryService.storeNegotiationPlan(42L, 7, List.of(
