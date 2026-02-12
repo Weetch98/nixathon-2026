@@ -33,22 +33,31 @@ public class GameMemoryService {
 
     private static final Logger log = LoggerFactory.getLogger(GameMemoryService.class);
 
+    // We store our last negotiation commitment (focused target, allies, sent messages, turn).
     private final Map<Long, NegotiationCommitment> commitmentsByGameId = new ConcurrentHashMap<>();
+
+    // We store the current state of the game, which contains player profiles and other helpful information.
     private final Map<Long, GameState> gameStateByGameId = new ConcurrentHashMap<>();
 
     /**
      * Persists the outgoing negotiation plan so combat phase can reuse intent.
+     * This is the negotiation plan we created during the negotiation phase.
      */
     public void storeNegotiationPlan(long gameId, int turn, List<NegotiationMessage> messages) {
+
+        // These are the players to whom we sent a negotiation message.
         Set<Integer> messageRecipients = messages.stream()
                 .map(NegotiationMessage::allyId)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
+        // These are the players to whom we sent a negotiation message with empty targets.
+        // Leaving the targets empty means we declared those players as allies.
         Set<Integer> explicitAllies = messages.stream()
                 .filter(message -> message.attackTargetId() == null)
                 .map(NegotiationMessage::allyId)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
+        // The most focused player in our negotiation messages.
         Integer focusTarget = messages.stream()
                 .map(NegotiationMessage::attackTargetId)
                 .filter(java.util.Objects::nonNull)
@@ -73,7 +82,7 @@ public class GameMemoryService {
     }
 
     /**
-     * Returns negotiation commitment if it exists for the same game turn.
+     * Returns negotiation commitment if it exists for the given gameId and turn.
      */
     public Optional<NegotiationCommitment> findCommitment(long gameId, int turn) {
         NegotiationCommitment commitment = commitmentsByGameId.get(gameId);
@@ -96,21 +105,29 @@ public class GameMemoryService {
      * Updates lightweight visibility info from negotiation payload.
      */
     public void observeNegotiationTurn(long gameId, int turn, List<EnemyTowerState> enemyTowers) {
+        // Get the current game state.
         GameState gameState = stateForGame(gameId);
 
         synchronized (gameState) {
+            // If we already observed the negotiation request for this turn return early.
             if (gameState.lastObservedNegotiationTurn != null && gameState.lastObservedNegotiationTurn == turn) {
                 return;
             }
+
+            // Update the last observed negotiation turn ID with the current (hopefully most recent) one.
             gameState.lastObservedNegotiationTurn = turn;
 
+            // Get the alive enemies from the enemies list.
             List<EnemyTowerState> aliveEnemies = enemyTowers.stream()
                     .filter(enemy -> enemy.hp() > 0)
                     .toList();
+
+            // Update the turn for the duel mode starts.
             updateDuelState(gameState, turn, aliveEnemies.size());
 
             for (EnemyTowerState enemy : aliveEnemies) {
                 // Negotiation payload still gives us level/durability snapshots.
+                // We update the known level and durability for each player.
                 gameState.profileFor(enemy.playerId())
                         .observeVisibility(turn, enemy.level(), enemy.effectiveDurability());
             }
@@ -128,21 +145,29 @@ public class GameMemoryService {
         GameState gameState = stateForGame(gameId);
 
         synchronized (gameState) {
+            // We already observed this combat turn.
             if (gameState.lastObservedCombatTurn != null && gameState.lastObservedCombatTurn == turn) {
                 return;
             }
+
+            // Update last observed turn to current one.
             gameState.lastObservedCombatTurn = turn;
 
+            // Get alive enemies.
             List<EnemyTowerState> aliveEnemies = request.enemyTowers().stream()
                     .filter(enemy -> enemy.hp() > 0)
                     .toList();
+
+            // Update when duel mode starts
             updateDuelState(gameState, turn, aliveEnemies.size());
 
+            // Get all the previous attack moves for the players.
             Map<Integer, List<PlayerAttack>> attacksByPlayer = new HashMap<>();
             for (PlayerAttack attack : request.previousAttacks()) {
                 attacksByPlayer.computeIfAbsent(attack.playerId(), ignored -> new ArrayList<>()).add(attack);
             }
 
+            // Get all the diplomacy actions for the players.
             Map<Integer, List<DiplomacyAction>> diplomacyByPlayer = new HashMap<>();
             for (PlayerDiplomacy diplomacy : request.diplomacy()) {
                 diplomacyByPlayer.computeIfAbsent(diplomacy.playerId(), ignored -> new ArrayList<>())
@@ -150,18 +175,25 @@ public class GameMemoryService {
             }
 
             for (EnemyTowerState enemy : aliveEnemies) {
+                // Get player profiles.
                 MutablePlayerProfile profile = gameState.profileFor(enemy.playerId());
+
+                // Update enemy level and durability information inside player profile.
                 profile.observeVisibility(turn, enemy.level(), enemy.effectiveDurability());
 
                 boolean offeredPeaceThisTurn = false;
                 for (DiplomacyAction diplomacyAction : diplomacyByPlayer.getOrDefault(enemy.playerId(), List.of())) {
+                    // He wants us to become friends and form an alliance.
                     if (diplomacyAction.allyId() == selfId && diplomacyAction.attackTargetId() == null) {
                         profile.recordPeaceOffer(turn);
                         offeredPeaceThisTurn = true;
                     }
+                    // He wants us to attack someone together.
                     if (diplomacyAction.allyId() == selfId && diplomacyAction.attackTargetId() != null) {
                         profile.recordCoordinationOffer();
                     }
+
+                    // He wants to attack us, we will treat this as a threat.
                     if (diplomacyAction.attackTargetId() != null && diplomacyAction.attackTargetId() == selfId) {
                         profile.recordThreatDeclaration(turn);
                     }
@@ -169,9 +201,12 @@ public class GameMemoryService {
 
                 boolean attackedAnyoneThisTurn = false;
                 boolean attackedUsThisTurn = false;
+
                 for (PlayerAttack attack : attacksByPlayer.getOrDefault(enemy.playerId(), List.of())) {
                     attackedAnyoneThisTurn = true;
                     boolean attackedUs = attack.action().targetId() == selfId;
+
+                    // Record attack data: number of attacks, troops sent, last attack turn, etc.
                     profile.recordAttack(turn, attackedUs, attack.action().troopCount());
                     if (attackedUs) {
                         attackedUsThisTurn = true;
@@ -179,9 +214,13 @@ public class GameMemoryService {
                 }
 
                 // Track AFK-like inactivity streaks to detect passive hoarders.
+                // It tracks consecutive attack and no-attacks.
                 profile.recordActivityPattern(attackedAnyoneThisTurn);
+
+                // Offered peace recently.
                 boolean recentlyOfferedPeace = profile.lastPeaceOfferTurn != null
                         && (turn - profile.lastPeaceOfferTurn) <= 2;
+
                 // Betrayal means attacking us shortly after (or during) peace signaling.
                 if (attackedUsThisTurn && (offeredPeaceThisTurn || recentlyOfferedPeace)) {
                     profile.recordBetrayal(turn);
@@ -250,13 +289,19 @@ public class GameMemoryService {
      * Tracks when duel starts so fatigue calculations can apply duel fatigue rule.
      */
     private void updateDuelState(GameState gameState, int turn, int aliveEnemyCount) {
+        // The duel starts when there is only one alive enemy.
         if (aliveEnemyCount == 1) {
+
+            // If we haven't updated the game state before, it means this is the turn when the enemy count dropped to 1.
+            // We store the current turn so we know then duel mode started.
             if (gameState.lastAliveEnemyCount > 1 || gameState.duelStartTurn == null) {
                 gameState.duelStartTurn = turn;
             }
         } else if (aliveEnemyCount > 1) {
             gameState.duelStartTurn = null;
         }
+
+        // We also update the game state to store most recent aliveEnemyCount
         gameState.lastAliveEnemyCount = aliveEnemyCount;
     }
 
@@ -332,6 +377,7 @@ public class GameMemoryService {
 
         /**
          * Composite trust signal. Positive values imply better reliability.
+         * This value can be negative. 0 means completely neutral towards us.
          */
         public int trustScore() {
             return (peaceOffersToUs * 6)
@@ -345,7 +391,10 @@ public class GameMemoryService {
          * Heuristic for players that stay passive while likely accumulating resources.
          */
         public boolean likelyAfkCollector() {
+            // Player attack less on average then 1/3 of the turns so far.
             boolean rarelyAttacks = totalAttacks <= Math.max(1, turnsObserved / 3);
+
+            // Player haven't attacked for 3 turns, attacks rarely, and already has a level 2 base.
             return consecutiveNoAttackTurns >= 3 && rarelyAttacks && knownLevel >= 2;
         }
 
@@ -365,12 +414,22 @@ public class GameMemoryService {
      */
     private static final class GameState {
 
+        // The turnId of the last negotiation request.
         private Integer lastObservedNegotiationTurn;
+
+        // The turnId of the last combat request.
         private Integer lastObservedCombatTurn;
+
+        // Store which turn duel mode started.
         private Integer duelStartTurn;
+
+        // The current number of alive enemies.
         private int lastAliveEnemyCount = Integer.MAX_VALUE;
+
+        // Historical player data, used for decision-making.
         private final Map<Integer, MutablePlayerProfile> profilesByPlayerId = new HashMap<>();
 
+        // Return the player profile for a given playerId, or create a new one if it does not exist.
         private MutablePlayerProfile profileFor(int playerId) {
             return profilesByPlayerId.computeIfAbsent(playerId, MutablePlayerProfile::new);
         }

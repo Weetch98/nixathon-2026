@@ -10,14 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Main combat decision engine.
@@ -55,12 +48,19 @@ public class CombatStrategyService {
      */
     public List<CombatActionResponse> planCombat(CombatRequest request) {
         long startNanos = System.nanoTime();
+
+        // Get alive enemies.
         List<EnemyTowerState> aliveEnemies = request.enemyTowers().stream()
                 .filter(enemy -> enemy.hp() > 0)
                 .toList();
 
+        // Our own tower.
         TowerState playerTower = request.playerTower();
+
+        // How many resources do we currently have.
         int totalResources = playerTower.resources();
+
+        // If there are no enemies, or we have no resources we skip this turn... No other choice.
         if (aliveEnemies.isEmpty() || totalResources <= 0) {
             log.info(
                     "Combat planning skipped game={} turn={} reason={} aliveEnemies={} resources={}",
@@ -73,12 +73,20 @@ public class CombatStrategyService {
             return List.of();
         }
 
-        // 1) Refresh long-term profiles and derive strategic signals.
+        // We update the player profiles using the combat request.
         gameMemoryService.observeCombatTurn(request);
+
+        // Get player profiles.
         Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy = gameMemoryService
                 .getPlayerProfiles(request.gameId(), aliveEnemies);
+
+        // Get threat level for each enemy.
         Map<Integer, Integer> threatByEnemy = threatAssessmentService.assessCombatThreat(request, profilesByEnemy);
+
+        // Get some useful information from negotiating.
         DiplomacySignals diplomacySignals = analyzeDiplomacy(request);
+
+        // Estimate how many troops each enemy will send to us.
         Map<Integer, Integer> predictedCounterTroopsByEnemy = estimateCounterTroopsByEnemy(
                 request,
                 aliveEnemies,
@@ -86,19 +94,31 @@ public class CombatStrategyService {
                 profilesByEnemy,
                 diplomacySignals
         );
+
+        // Get our own commitment from negotiation phase.
         GameMemoryService.NegotiationCommitment commitment = gameMemoryService
                 .findCommitment(request.gameId(), request.turn())
                 .orElse(null);
+
+        // Turn when the duel mode started.
         Integer duelStartTurn = gameMemoryService.findDuelStartTurn(request.gameId()).orElse(null);
+
+        // Forecast the state of the fatigue.
         FatigueService.FatigueForecast fatigue = fatigueService
                 .forecast(request.turn(), aliveEnemies.size(), duelStartTurn);
+
+        // Determine the current strategy, be aggressive, or play for survival, or try to close the game...
         CombatPosture posture = determinePosture(request, aliveEnemies.size(), threatByEnemy, fatigue);
 
-        // 2) Estimate defensive needs first, then decide whether economy upgrade is safe.
+        // Estimate defensive needs first, then decide whether economy upgrade is safe.
         int expectedIncomingDamage = estimateIncomingDamage(predictedCounterTroopsByEnemy, profilesByEnemy, posture);
+
+        // How much resource do we want to spend on armor.
         int baselineArmorSpend = baselineArmorSpend(playerTower, expectedIncomingDamage, totalResources, posture);
+
         int upgradeCost = economyService.upgradeCost(playerTower.level());
 
+        // Check if we should upgrade in the first place.
         boolean shouldUpgrade = shouldUpgrade(
                 request,
                 aliveEnemies,
@@ -110,8 +130,10 @@ public class CombatStrategyService {
                 upgradeCost
         );
 
-        // 3) Allocate resources to attack planning based on posture/fatigue urgency.
+        // Allocate resources to attack planning based on posture/fatigue urgency.
         int resourcesAfterUpgrade = shouldUpgrade ? totalResources - upgradeCost : totalResources;
+
+        // Calculate a targeting score for each enemy, and sort the list from high to low.
         List<EnemyTowerState> rankedTargets = rankTargets(
                 request.turn(),
                 request.playerTower().level(),
@@ -124,8 +146,11 @@ public class CombatStrategyService {
                 fatigue,
                 resourcesAfterUpgrade
         );
+
+        // Our priority target is the first in the list.
         EnemyTowerState primaryTarget = rankedTargets.isEmpty() ? null : rankedTargets.getFirst();
 
+        // Plan how much we want to spend on armor now that we know our primary target.
         int armorSpend = planArmorSpend(
                 playerTower,
                 primaryTarget,
@@ -135,9 +160,11 @@ public class CombatStrategyService {
                 posture,
                 fatigue
         );
+
+        // How much resource we are left with after upgrading (maybe) and buying armor (maybe).
         int resourcesAfterDefense = Math.max(resourcesAfterUpgrade - armorSpend, 0);
 
-        // 4) Build candidate actions and sanitize so API contract can never be violated.
+        // Build candidate actions and sanitize so API contract can never be violated.
         Map<Integer, Integer> attacks = planAttacks(
                 rankedTargets,
                 profilesByEnemy,
@@ -148,8 +175,11 @@ public class CombatStrategyService {
                 posture,
                 fatigue
         );
+
         int cancellationMitigation = estimateCancellationMitigation(attacks, predictedCounterTroopsByEnemy);
         int expectedIncomingAfterCancellation = Math.max(0, expectedIncomingDamage - cancellationMitigation);
+
+        // We calculate how much armor we need if we account for troop cancellation.
         int revisedBaselineArmorSpend = baselineArmorSpend(playerTower, expectedIncomingAfterCancellation, resourcesAfterUpgrade, posture);
         int revisedArmorSpend = planArmorSpend(
                 playerTower,
@@ -160,6 +190,8 @@ public class CombatStrategyService {
                 posture,
                 fatigue
         );
+
+        // If it seems like we will need to spend less on armor we send the freed up troops to attack or main focus.
         if (revisedArmorSpend < armorSpend) {
             int freedTroops = armorSpend - revisedArmorSpend;
             armorSpend = revisedArmorSpend;
@@ -169,6 +201,7 @@ public class CombatStrategyService {
             }
         }
 
+        // Create the proposed actions.
         List<CombatActionResponse> proposedActions = new ArrayList<>();
         if (armorSpend > 0) {
             proposedActions.add(CombatActionResponse.armor(armorSpend));
@@ -252,6 +285,8 @@ public class CombatStrategyService {
     ) {
         int selfId = request.playerTower().playerId();
         int selfLevel = request.playerTower().level();
+
+        // Get how many troops he sent to us last time.
         Map<Integer, Integer> lastTurnTroopsToUsByEnemy = new HashMap<>();
         for (PlayerAttack attack : request.previousAttacks()) {
             if (attack.action().targetId() == selfId) {
@@ -259,33 +294,50 @@ public class CombatStrategyService {
             }
         }
 
+        // This tries to estimate how many troops the enemy will send to us.
+        // Mostly it just use some heuristics and historical average.
         Map<Integer, Integer> counterTroopsByEnemy = new HashMap<>();
         for (EnemyTowerState enemy : aliveEnemies) {
             int enemyId = enemy.playerId();
             GameMemoryService.PlayerProfileSnapshot profile = profilesByEnemy.get(enemyId);
 
+            // Get how many troops he sent last turn.
             int lastTurnTroops = lastTurnTroopsToUsByEnemy.getOrDefault(enemyId, 0);
             int historicalAverage = 0;
+
+            // Get historical average.
             if (profile != null && profile.attacksAgainstUsCount() > 0) {
                 historicalAverage = (int) Math.round((double) profile.attacksAgainstUsTroops() / profile.attacksAgainstUsCount());
             }
+            // Come up with an estimation based on threat score.
+            // I'm expecting this to be pretty inaccurate, but who knows...
             int threatProjection = (int) Math.round(threatByEnemy.getOrDefault(enemyId, 0) * 0.35);
+
+            // Take the worst case scenario. Whichever method produce the highest method.
             int predictedTroops = Math.max(lastTurnTroops, Math.max(historicalAverage, threatProjection));
 
+            // If he attacked last two turns we increase troop number with a random amount.
             if (profile != null && profile.consecutiveAttackTurns() >= 2) {
                 predictedTroops += 4;
             }
+
+            // If he is an AFK collector we also increate troop number.
             if (profile != null && profile.likelyAfkCollector()) {
                 predictedTroops += 5 + (enemy.level() * 2);
             }
+            // If he is 2 levels higher than us, we also increase it.
             if (profile != null
                     && profile.consecutiveNoAttackTurns() >= 2
                     && enemy.level() >= (selfLevel + 2)) {
                 predictedTroops += 6;
             }
+
+            // If he told us he will attack us, we believe it and also increase predicted troop count.
             if (diplomacySignals.explicitThreatEnemies().contains(enemyId)) {
                 predictedTroops += 6;
             }
+
+            // If he offered peace, and he is reliable (no betrayals and nasty stuff), we kinda believe him.
             if (diplomacySignals.peaceOfferingEnemies().contains(enemyId)
                     && profile != null
                     && profile.betrayalsAgainstUs() == 0
@@ -307,10 +359,12 @@ public class CombatStrategyService {
             Map<Integer, GameMemoryService.PlayerProfileSnapshot> profilesByEnemy,
             CombatPosture posture
     ) {
+        // Add all predicted troops for this turn.
         int expectedIncoming = predictedCounterTroopsByEnemy.values().stream()
                 .mapToInt(Integer::intValue)
                 .sum();
 
+        // Add some more damage if the other players betrayed us or attack a lot.
         int volatilityPenalty = profilesByEnemy.values().stream()
                 .mapToInt(profile -> (profile.betrayalsAgainstUs() * 3) + (profile.consecutiveAttackTurns() * 2))
                 .sum();
@@ -337,6 +391,8 @@ public class CombatStrategyService {
     ) {
         int desiredArmor = expectedIncomingDamage + safetyBuffer(playerTower.hp(), posture);
         int additionalArmorNeeded = Math.max(desiredArmor - playerTower.armor(), 0);
+
+        // The cap on how many resource we want to spend max on defense.
         int defenseCap = (int) Math.round(resourceCap * defenseShare(posture));
         return Math.min(additionalArmorNeeded, defenseCap);
     }
@@ -388,6 +444,7 @@ public class CombatStrategyService {
             int expectedIncomingDamage,
             int upgradeCost
     ) {
+        // If it is late game we might want to force upgrade so we match level with our 1v1 enemy.
         if (shouldForceLevelTieBreakUpgrade(
                 request,
                 aliveEnemies,
@@ -399,6 +456,9 @@ public class CombatStrategyService {
         )) {
             return true;
         }
+        // When we are behind the level curve but still safe, prioritize catching up economically
+        // This basically means we are behind level, and we don't have to spend too much for armor, we can upgrade.
+        // This function only applies for early game, 3 enemies living, no fatigue...
         if (shouldTakeEconomicUpgrade(
                 request,
                 aliveEnemies,
@@ -428,6 +488,8 @@ public class CombatStrategyService {
             return false;
         }
 
+        // Check if we will still have enough resource to buy armor after upgrading.
+        // Armor spend if of course completely calculated using heuristics.
         int resourcesAfterUpgrade = totalResources - upgradeCost;
         if (resourcesAfterUpgrade < baselineArmorSpend + 25) {
             return false;
@@ -435,6 +497,8 @@ public class CombatStrategyService {
 
         int turnsRemaining = Math.max(0, MAX_TURNS - request.turn());
         int projectedUpgradeReturn = economyService.estimatedUpgradeReturn(request.playerTower().level(), turnsRemaining);
+
+        // Check if upgrading is still a good investment.
         return projectedUpgradeReturn >= (int) Math.round(upgradeCost * 0.60);
     }
 
@@ -442,7 +506,7 @@ public class CombatStrategyService {
      * 4-player anti-snowball upgrade policy.
      * <p>
      * When we are behind the level curve but still safe, prioritize catching up economically
-     * so one upgrader cannot dominate the mid game with one large troop spike.
+     * so one upgrader cannot dominate the mid-game with one large troop spike.
      */
     private boolean shouldTakeEconomicUpgrade(
             CombatRequest request,
@@ -512,7 +576,9 @@ public class CombatStrategyService {
             return false;
         }
 
+        // The enemy which we are playing 1v1 currently.
         EnemyTowerState duelEnemy = aliveEnemies.getFirst();
+
         int currentLevel = request.playerTower().level();
         int upgradedLevel = currentLevel + 1;
         if (upgradedLevel <= duelEnemy.level()) {
@@ -547,14 +613,19 @@ public class CombatStrategyService {
             CombatPosture posture,
             FatigueService.FatigueForecast fatigue
     ) {
+        // resourceAfterUpgrade can be 0 if we don't want to upgrade.
         int armorSpend = Math.min(baselineArmorSpend, resourcesAfterUpgrade);
 
+        // If we have no target we can spend every resource to armor.
         if (primaryTarget == null) {
             return armorSpend;
         }
 
+        // Let's check how much it costs to kill the primary target.
         int killCost = primaryTarget.effectiveDurability() + predictedCounterTroopsByEnemy
                 .getOrDefault(primaryTarget.playerId(), 0);
+
+        // If we have immediate kill window, and we are in aggro or closer, prioritize the kill.
         boolean immediateKillWindow = killCost <= resourcesAfterUpgrade;
         if (immediateKillWindow
                 && (posture == CombatPosture.CLOSER
@@ -564,14 +635,17 @@ public class CombatStrategyService {
             armorSpend = Math.min(armorSpend, maxArmorWithKill);
         }
 
+        // Spend less on armor during fatigue.
         if (fatigue.active() && fatigue.currentDamage() >= 40) {
             armorSpend = (int) Math.floor(armorSpend * 0.70);
         }
 
+        // While we have very low HP, and we are in survival mode spend a lot on armor.
         if (playerTower.hp() <= 20 && posture == CombatPosture.SURVIVAL) {
             armorSpend = Math.max(armorSpend, Math.min(resourcesAfterUpgrade, baselineArmorSpend + 8));
         }
 
+        // Move armor spend in the closed interval [0, resourcesAfterUpgrade]
         return Math.max(0, Math.min(armorSpend, resourcesAfterUpgrade));
     }
 
@@ -590,10 +664,13 @@ public class CombatStrategyService {
             FatigueService.FatigueForecast fatigue,
             int availableAttackBudget
     ) {
+        // Get max enemy level.
         int maxEnemyLevel = enemies.stream()
                 .mapToInt(EnemyTowerState::level)
                 .max()
                 .orElse(playerLevel);
+
+        // We calculate a priority targeting list based on historical data, our negotiation commitment, and other stuff.
         return enemies.stream()
                 .sorted(Comparator.comparingDouble(
                         (EnemyTowerState enemy) -> targetPriority(
@@ -632,24 +709,36 @@ public class CombatStrategyService {
             FatigueService.FatigueForecast fatigue,
             int availableAttackBudget
     ) {
+        // Get player profile.
         GameMemoryService.PlayerProfileSnapshot profile = profilesByEnemy.get(enemy.playerId());
-        int durability = enemy.effectiveDurability();
-        int threat = threatByEnemy.getOrDefault(enemy.playerId(), 0);
+
+        int durability = enemy.effectiveDurability(); // effective durability is basically armor + hp
+        int threat = threatByEnemy.getOrDefault(enemy.playerId(), 0); // threat score is based on aggression towards us
+
+        // This is some random heuristics.
         double score = (threat * 2.0) + (enemy.level() * 7.0) + (170.0 - durability);
+
         int levelLeadOverUs = enemy.level() - playerLevel;
 
+        // If other player wants us to attack this guy, we kinda do it and raise target score.
         score += diplomacySignals.focusBoostByTarget().getOrDefault(enemy.playerId(), 0) * 1.2;
+
+        // If player offered peace we lower the score just a little-bit.
         if (diplomacySignals.peaceOfferingEnemies().contains(enemy.playerId())) {
             score -= 7;
         }
+
+        // On explicit threat we increate target score.
         if (diplomacySignals.explicitThreatEnemies().contains(enemy.playerId())) {
             score += 14;
         }
 
+        // We increate or decrease targeting score based on some historical data.
         if (profile != null) {
             score += profile.hostilityScore() * 0.55;
             score += profile.afkHoardingRisk() * 1.25;
             score += profile.betrayalsAgainstUs() * 14.0;
+
             if (profile.likelyAfkCollector()) {
                 score += turn >= 8 ? 12 : 6;
             }
@@ -674,9 +763,12 @@ public class CombatStrategyService {
         }
 
         if (commitment != null) {
-            if (commitment.focusTargetId() != null && enemy.playerId() == commitment.focusTargetId()) {
+            // If we said we will attack this guy during negotiation, we are trustworthy and raise targeting score.
+            if (commitment.focusTargetId() != null && Objects.equals(enemy.playerId(), commitment.focusTargetId())) {
                 score += 16;
             }
+
+            // We said we will be allies, so we lower the score, but only if he is also a good guy (and we are in balanced mode)
             if (commitment.explicitAlliedPlayerIds().contains(enemy.playerId())) {
                 if (profile != null && profile.trustScore() >= 22 && profile.betrayalsAgainstUs() == 0 && posture == CombatPosture.BALANCED) {
                     score -= 8;
@@ -686,15 +778,20 @@ public class CombatStrategyService {
             }
         }
 
+        // If we can kill him easily because we have budget, increase attack score.
         if (durability <= availableAttackBudget) {
             score += 10;
         }
+
+        // End-game: focus players with high levels.
         if (fatigue.active() || fatigue.turnsUntilStart() <= 2) {
             score += (enemy.level() * 2.0);
             if (durability <= availableAttackBudget) {
                 score += 10;
             }
         }
+
+        // In closer mode we are more likely to attack.
         if (posture == CombatPosture.CLOSER) {
             score += 12;
         }
@@ -716,6 +813,8 @@ public class CombatStrategyService {
             FatigueService.FatigueForecast fatigue
     ) {
         LinkedHashMap<Integer, Integer> attacks = new LinkedHashMap<>();
+
+        // If we have no budget or enemy list is empty we don't attack.
         if (attackBudget <= 0 || rankedTargets.isEmpty()) {
             return attacks;
         }
@@ -724,17 +823,25 @@ public class CombatStrategyService {
         int securedEliminations = 0;
         int eliminationLimit = posture == CombatPosture.SURVIVAL ? 1 : 2;
 
+        // First we are focusing on eliminations and kill securing.
         for (EnemyTowerState target : rankedTargets) {
             if (remainingBudget <= 0) {
                 break;
             }
 
+            // KillCost is basically HP + armor + estimated troops towards us from the enemy.
             int killCost = target.effectiveDurability() + predictedCounterTroopsByEnemy
                     .getOrDefault(target.playerId(), 0);
+
+            // Get player profile.
             GameMemoryService.PlayerProfileSnapshot profile = profilesByEnemy.get(target.playerId());
+
+            // If KillCost is greater than our budget leave this guy alone. It means we can't secure the kill anyways.
             if (killCost > remainingBudget) {
                 continue;
             }
+
+            // Check if we should secure the kill based on different heuristics...
             if (!shouldSecureKill(
                     target,
                     killCost,
@@ -761,16 +868,23 @@ public class CombatStrategyService {
         // Spend leftover troops as pressure on the best remaining focus target.
         if (remainingBudget > 0) {
             EnemyTowerState focusTarget = chooseFocusTarget(rankedTargets, attacks.keySet(), commitment);
+
             if (focusTarget != null) {
+                // Check if we can split pressure among players.
                 boolean canSplitPressure = rankedTargets.size() >= FOUR_PLAYER_ENEMY_COUNT
                         && posture != CombatPosture.SURVIVAL
                         && remainingBudget >= 16;
+
+                // If we can split pressure then select a secondary focus target as well.
+                // This sometimes return null if we already have an attack against everyone.
                 if (canSplitPressure) {
                     EnemyTowerState secondaryTarget = chooseSecondaryFocusTarget(
                             rankedTargets,
                             attacks.keySet(),
                             focusTarget.playerId()
                     );
+
+                    // Split the attack between first and secondary target
                     if (secondaryTarget != null) {
                         int primaryPressure = (int) Math.floor(remainingBudget * 0.62);
                         primaryPressure = Math.max(8, primaryPressure);
@@ -824,7 +938,7 @@ public class CombatStrategyService {
      */
     private boolean shouldSecureKill(
             EnemyTowerState target,
-            int adjustedKillCost,
+            int adjustedKillCost, // HP + armor + estimated troop count towards us
             GameMemoryService.PlayerProfileSnapshot profile,
             int threat,
             int rankedTargetCount,
@@ -832,24 +946,37 @@ public class CombatStrategyService {
             CombatPosture posture,
             FatigueService.FatigueForecast fatigue
     ) {
+        // He is the only enemy, of course kill him!
         if (rankedTargetCount == 1) {
             return true;
         }
+
+        // Its late-game, there is fatigue, kill him if we are sure we can.
         if (fatigue.active() || fatigue.turnsUntilStart() <= 2) {
             return adjustedKillCost <= attackBudget;
         }
+
+        // Low-HP enemy, or very dangerous.
         if (target.hp() <= 45 || threat >= 30) {
             return true;
         }
+
+        // He betrayed us, or he is probably afk collecting for late-game.
         if (profile != null && (profile.betrayalsAgainstUs() > 0 || profile.likelyAfkCollector())) {
             return true;
         }
+
+        // Lvl3+ enemy which could be killed without really investing too much resource. Kill him.
         if (rankedTargetCount >= FOUR_PLAYER_ENEMY_COUNT && target.level() >= 3) {
             return adjustedKillCost <= Math.max(26, (attackBudget * 2) / 3);
         }
+
+        // If we are aggro or closer and kill doesn't take too much resource.
         if (posture == CombatPosture.CLOSER || posture == CombatPosture.AGGRESSIVE) {
             return adjustedKillCost <= Math.max(22, attackBudget / 2);
         }
+
+        // Easy to kill, or not...
         return adjustedKillCost <= Math.max(18, attackBudget / 3);
     }
 
@@ -861,19 +988,26 @@ public class CombatStrategyService {
             Set<Integer> alreadyAttackedTargets,
             GameMemoryService.NegotiationCommitment commitment
     ) {
+        // If we said we will attack someone, and we have spare resource after eliminations, attack him!
         if (commitment != null && commitment.focusTargetId() != null) {
             for (EnemyTowerState target : rankedTargets) {
-                if (target.playerId() == commitment.focusTargetId()) {
+                if (Objects.equals(target.playerId(), commitment.focusTargetId())) {
                     return target;
                 }
             }
         }
 
+        // Select target based on the targeting score. rankedTargets is sorted from high to low.
         for (EnemyTowerState target : rankedTargets) {
+
+            // If we have an attack against him already skip him.
             if (!alreadyAttackedTargets.contains(target.playerId())) {
                 return target;
             }
         }
+
+
+        // If we have an attack against everyone already: still return the highest threat as a fallback.
         return rankedTargets.isEmpty() ? null : rankedTargets.getFirst();
     }
 
@@ -908,12 +1042,15 @@ public class CombatStrategyService {
 
         for (PlayerDiplomacy diplomacy : request.diplomacy()) {
             int enemyId = diplomacy.playerId();
+            // He wants us to be his ally.
             if (diplomacy.action().allyId() == selfId && diplomacy.action().attackTargetId() == null) {
                 peaceOfferingEnemies.add(enemyId);
             }
+            // He wants to attack us.
             if (diplomacy.action().attackTargetId() != null && diplomacy.action().attackTargetId() == selfId) {
                 explicitThreatEnemies.add(enemyId);
             }
+            // He wants us to attack someone else. We raise the focus a little bit for the target.
             if (diplomacy.action().allyId() == selfId && diplomacy.action().attackTargetId() != null) {
                 focusBoostByTarget.merge(diplomacy.action().attackTargetId(), 10, Integer::sum);
             }
@@ -1017,8 +1154,13 @@ public class CombatStrategyService {
      * Parsed diplomacy signals used to influence target scoring.
      */
     private record DiplomacySignals(
+            // If they say to attack someone, we kinda listen and increment focus a little bit.
             Map<Integer, Integer> focusBoostByTarget,
+
+            // Players who wants to keep peace and ally with us.
             Set<Integer> peaceOfferingEnemies,
+
+            // Players who wants to attack us.
             Set<Integer> explicitThreatEnemies
     ) {
     }

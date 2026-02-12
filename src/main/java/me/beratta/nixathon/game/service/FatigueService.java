@@ -26,19 +26,19 @@ public class FatigueService {
      */
     public FatigueForecast forecast(int currentTurn, int aliveEnemyCount, Integer duelStartTurn) {
         int fatigueStartTurn = fatigueStartTurn(aliveEnemyCount, duelStartTurn);
-        if (fatigueStartTurn == Integer.MAX_VALUE) {
-            return new FatigueForecast(false, 0, 0, Integer.MAX_VALUE, null);
-        }
 
+        // Fatigue haven't started yet.
         if (currentTurn < fatigueStartTurn) {
             int turnsUntilStart = fatigueStartTurn - currentTurn;
             int nextTurnDamage = currentTurn + 1 >= fatigueStartTurn ? fatigueDamageForStage(1) : 0;
             return new FatigueForecast(false, 0, nextTurnDamage, turnsUntilStart, fatigueStartTurn);
         }
 
+        // Fatigue turn index to calculate current and next fatigue damage.
         int fatigueTurnIndex = (currentTurn - fatigueStartTurn) + 1;
         int currentDamage = fatigueDamageForStage(fatigueTurnIndex);
         int nextDamage = fatigueDamageForStage(fatigueTurnIndex + 1);
+
         return new FatigueForecast(true, currentDamage, nextDamage, 0, fatigueStartTurn);
     }
 
@@ -46,10 +46,10 @@ public class FatigueService {
      * Resolves the earliest fatigue start turn across all fatigue rules.
      */
     private int fatigueStartTurn(int aliveEnemyCount, Integer duelStartTurn) {
-        int startTurn = Integer.MAX_VALUE;
+        int startTurn;
 
         // Global fatigue rule: after 25 combats.
-        startTurn = Math.min(startTurn, 26);
+        startTurn = 26;
 
         // Duel fatigue rule: after 5 turns in duel mode.
         if (aliveEnemyCount == 1 && duelStartTurn != null) {

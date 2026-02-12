@@ -14,6 +14,11 @@ public class EconomyService {
     private static final int BASE_INCOME = 20;
     private static final int LEVEL_INCOME_STEP = 8;
 
+    /**
+     * Calculates the upgrade cost to the next level.
+     * @param currentLevel The current level of the tower.
+     * @return How much resource it takes to upgrade it to the next level.
+     */
     public int upgradeCost(int currentLevel) {
         if (currentLevel < 1) {
             throw new IllegalArgumentException("Tower level must be at least 1");
@@ -23,12 +28,24 @@ public class EconomyService {
         return cost;
     }
 
+    /**
+     * Estimates the income for a specific level.
+     * @param level The level of the tower.
+     * @return The estimated income for a turn.
+     */
     public int estimatedIncomeForLevel(int level) {
         int income = BASE_INCOME + ((Math.max(level, 1) - 1) * LEVEL_INCOME_STEP);
         log.debug("Computed estimated income level={} income={}", level, income);
         return income;
     }
 
+    /**
+     * Estimates resource return on upgrading our tower to the next level.
+     *
+     * @param currentLevel The current level of our tower.
+     * @param turnsRemaining How many turns remained of the game.
+     * @return How much resource can we get by upgrading to the next level during the remaining time.
+     */
     public int estimatedUpgradeReturn(int currentLevel, int turnsRemaining) {
         int nextLevelIncome = estimatedIncomeForLevel(currentLevel + 1);
         int currentIncome = estimatedIncomeForLevel(currentLevel);
